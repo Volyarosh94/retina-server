@@ -16,6 +16,9 @@ FleetOrchestrator (retina_simulation/orchestrator.py)
     │       ├─ SimulatedAircraft × N
     │       └─ node views              (per-node observation geometry)
     │
+    ├─ MagnetometerArray        (RM3100s beside some receivers, magnetometer.py)
+    │       └─ POST /api/sim/magnetometer/push every 1 s
+    │
     ├─ AdsbLolClient            (optional real ADS-B feed)
     │
     ├─ config poller            (GET /api/simulation/config every 5 s)
@@ -77,6 +80,10 @@ tab (or `PUT /api/simulation/config`, admin-authed) can change at runtime:
 | `live_adsb_enabled` | true | Pull live aircraft from the feed into the world (off removes them) |
 | `min_aircraft` / `max_aircraft` | *(unset)* | Steady-state bounds for the **synthetic** aircraft |
 | `n_nodes` / `dual_fraction` / `max_range_km` | *(unset)* | Fleet-scene keys — applying one **restarts the fleet** for regeneration |
+
+Where the server runs a synthetic fleet, the same config carries the
+magnetometers' `mag_*` keys too; they are listed under
+[Magnetometers](#magnetometers), below.
 
 The fractions and aircraft counts apply in-process to *new spawns*. The scene
 keys are different: node count, dual-illuminator fraction and a uniform range
@@ -186,6 +193,121 @@ ignored while seeding runs, for the same one-cache reason.
 
 ---
 
+## Magnetometers
+
+The fleet can put a PNI RM3100 magnetometer at some of its receive sites, one
+per roof, named for the radar node beside it (`mag-<node id>`). They exist to
+show what a network of magnetometers beside the radars would see of a UAP
+modelled as a 1e9 A·m² magnetic dipole, and how often it would be fooled.
+The simulator produces the readings and the server detects. The whole feature
+exists only under `SYNTHETIC_FLEET_ENABLED`, and none of it touches the radar
+pipeline or `/v1/nodes`. The design note
+[2026-09-30-simulated-magnetometers.md](design-notes/2026-09-30-simulated-magnetometers.md)
+has the reasoning and the measurements.
+
+**Readings.** Once per world step, each magnetometer reads the sum of:
+
+- WMM2025 at its site;
+- a per-site crustal offset;
+- the solar-quiet daily variation;
+- an optional network-wide storm;
+- every anomalous object as a dipole;
+- the RM3100's datasheet noise for its cycle count, quantised to its counts.
+
+Aircraft and drones contribute nothing. The orchestrator posts the readings to
+`POST /api/sim/magnetometer/push` (simulator key) once a second. The truth
+behind each reading (the UAP field at the node, and the nearest UAP) rides
+beside it, for scoring only. The library's README
+(`libs/retina-simulation/README.md`) has the model and the payload.
+
+**Detection** (`backend/services/sim_magnetometer.py`) runs over the whole
+network, once a second:
+
+1. Each node's static level (a trimmed mean of 30 minutes) is subtracted.
+2. The median of the *other* nodes' deviations is subtracted. That takes
+   away the daily variation and storms, which are common to the network.
+3. The residual is matched against a passing dipole's signature (Anderson
+   functions) at six time scales from 2 to 64 s.
+4. The best match becomes a score in σ, with the same tail probability as
+   the χ² statistic behind it.
+
+An event opens at the threshold and carries:
+
+- the time of closest approach;
+- the strength in nT;
+- the score;
+- a confidence;
+- a range band.
+
+Each event is scored against the truth, which gives a live false-alarm rate
+with a 95 % interval.
+
+**Settings.** These are keys of the runtime config above, present only under
+`SYNTHETIC_FLEET_ENABLED`. Without it, a PUT carrying one is refused (400):
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `mag_enabled` | true | Place magnetometers at all |
+| `mag_n_nodes` | 8 | How many (0–60), never more than the fleet has sites |
+| `mag_placement` | `spread` | `spread` across the fleet, `core` near its centre, or `random` (seeded) |
+| `mag_cycle_count` | 200 | The sensor's cycle count: 50, 100, 200, 400 or 800 (30, 20, 15, ~11, ~8.4 nT noise) |
+| `mag_storm` | false | Run a storm (Dst −150 nT, pulsations), from the moment it is switched on |
+| `mag_threshold_sigma` | 5.5 | Detection threshold in σ (3–12). Server-side, applied at once |
+| `mag_common_mode` | true | Subtract the network's common mode. Server-side |
+
+The fleet applies its keys in-process at its next poll: no restart, because
+the magnetometers hold no connection. A change of threshold or common mode
+restarts the false-alarm scorecard, which describes one setting at a time.
+The snapshot restores the keys like the other simulation keys.
+
+**Routes.** All of these are mounted only under `SYNTHETIC_FLEET_ENABLED`:
+
+| Route | Who | What |
+|-------|-----|------|
+| `POST /api/sim/magnetometer/push` | simulator key | readings from the fleet |
+| `GET /api/sim/magnetometers` | admin | every magnetometer, the latest events, the scorecard, the settings |
+| `GET /api/sim/magnetometers/{node_id}?window=60–3600` | admin | one magnetometer's residual and score series and its events |
+| `POST /api/sim/magnetometers/flyby` | admin | fly a UAP past one magnetometer (or one the fleet picks) |
+
+A flyby is carried to the fleet in the runtime config as `mag_flyby`, with a
+number and the time of the request. The fleet flies each request once, and
+tells new from old by the time, which survives a server restart where the
+number does not. It ignores a request more than two minutes old when it first
+sees it. The UAP is an ordinary anomalous world object on a scripted track,
+so the radar nodes see it too.
+
+**The map.** On `/sim` the Magnetometers toggle shows:
+
+- a badge beside each radar site that has one, coloured by state: quiet,
+  elevated, detecting, or warming up;
+- the range band of an open detection;
+- a summary card with the live false-alarm rate;
+- a panel per magnetometer: score and residual charts, the current event
+  with its truth, and a button that flies a UAP past it.
+
+The settings are a section of the Physics Layer page (`/sim/physics`). The
+data is polled from the admin routes every 2 s and never goes on the aircraft
+WebSocket.
+
+**Measuring the detector.** This runs the simulator's readings through the
+server's ingest on a fake clock:
+
+```bash
+cd backend && RETINA_ENV=dev .venv/bin/python -m scripts.magnetometer_false_alarms          # ~20 min on 8 processes
+cd backend && RETINA_ENV=dev .venv/bin/python -m scripts.magnetometer_false_alarms --quick  # a minute: does it run
+```
+
+It reports three things:
+
+- the false-alarm rate at each threshold, beside the detector's model of it;
+- the storm with and without the common mode;
+- the detection probability against distance and speed.
+
+Rerun it after changing the detector, and carry the coefficient it fits over
+to `FALSE_ALARM_COEFFICIENT`.
+
+---
+
 ## TCP Protocol (NodeConnection)
 
 ```jsonc
@@ -225,12 +347,17 @@ unidirectional node → server.
 ## Running the Fleet Locally
 
 ```bash
-# Greenville scene matching staging's shape, against a local backend
+# Greenville scene matching staging's shape, against a local backend. The
+# layout is the generator's; the orchestrator then flies the scene it wrote,
+# as deploy/fleet-entrypoint.sh does.
+python3 -m retina_simulation.generator \
+  --nodes 30 --metro gvl --layout scatter --n-cluster 20 --seed 42 \
+  --output fleet_config.json
 python3 -m retina_simulation.orchestrator \
-  --nodes 30 --metro gvl --layout scatter --n-cluster 20 \
+  --config fleet_config.json --metro gvl \
   --mode adsb --interval 0.5 \
   --min-aircraft 20 --max-aircraft 40 \
-  --host localhost --port 3012 --seed 42
+  --host localhost --port 3012 --validation-url http://localhost:8000
 ```
 
 Key parameters:
@@ -246,6 +373,7 @@ Key parameters:
 | `--concurrency` | 20 | Max simultaneous TCP connects at startup |
 | `--min-aircraft` / `--max-aircraft` | 5 / 20 | Aircraft count range (runtime config can override) |
 | `--seed` | — | Deterministic scene generation |
+| `--magnetometers` / `--mag-placement` | 8 / `spread` | Starting magnetometer count and placement; the runtime config's `mag_*` keys take over at the first poll |
 
 Beam width needs no flag: every antenna is the 42° Yagi. `--beam-width-deg`
 exists only as an explicit override for experiments.
