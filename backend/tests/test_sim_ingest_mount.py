@@ -23,7 +23,16 @@ from tests.probe_helpers import run_probe
 # The routes the gate governs. They share one router, so mounting is
 # all-or-nothing; naming them individually is what makes a rename or a move to
 # another router show up here rather than pass quietly.
-SIM_INGEST_ROUTES = frozenset({"/api/sim/adsb/push", "/api/test/ground-truth/push"})
+SIM_INGEST_ROUTES = frozenset(
+    {
+        "/api/sim/adsb/push",
+        "/api/test/ground-truth/push",
+        "/api/sim/magnetometer/push",
+        "/api/sim/magnetometers",
+        "/api/sim/magnetometers/{node_id}",
+        "/api/sim/magnetometers/flyby",
+    }
+)
 
 # A route from a router mounted unconditionally. Asserting it is present in
 # every probe is the control: without it, an absent ingest path could equally

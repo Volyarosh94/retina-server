@@ -15,7 +15,7 @@ from config.constants import ANALYTICS_REFRESH_INTERVAL_S, FT_TO_M, is_num
 from core import state
 from core.task_registry import get_stale_tasks
 from core.users import require_admin
-from services import known_claiming, node_tracks
+from services import known_claiming, node_tracks, sim_magnetometer
 from services.frame_processor import resolve_ground_truth_hex
 from services.geo import haversine_km
 from services.id_utils import normalize_hex_key
@@ -468,9 +468,31 @@ async def get_simulation_config():
         else:
             counts["aircraft"] += 1
     return Response(
-        content=orjson.dumps({**state.simulation_config, "ground_truth_counts": counts}),
+        content=orjson.dumps({**_simulation_config_view(), "ground_truth_counts": counts}),
         media_type="application/json",
     )
+
+
+def _magnetometers_available() -> bool:
+    # Imported here: routes.sim_ingest imports this module for the sim key.
+    from routes.sim_ingest import synthetic_fleet_enabled
+
+    return synthetic_fleet_enabled(os.environ)
+
+
+def _simulation_config_view() -> dict:
+    """The config as the fleet and the Physics tab see it.
+
+    The magnetometer settings are simulation-only: with SYNTHETIC_FLEET_ENABLED
+    they are always present (defaults filled in), without it they are absent
+    even if an old snapshot carried some.
+    """
+    view = {k: v for k, v in state.simulation_config.items() if not k.startswith("mag_")}
+    if _magnetometers_available():
+        view.update(sim_magnetometer.effective_settings(state.simulation_config))
+        if "mag_flyby" in state.simulation_config:
+            view["mag_flyby"] = state.simulation_config["mag_flyby"]
+    return view
 
 
 @router.put("/api/simulation/config")
@@ -491,6 +513,13 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
     as dark.  live_adsb_enabled (bool) pauses that feed.
     Optional: max_range_km (0 = auto, or 10–400), min_aircraft (1–500),
     max_aircraft (1–500).
+
+    Magnetometer settings, only with SYNTHETIC_FLEET_ENABLED (see
+    services/sim_magnetometer.py): mag_enabled, mag_n_nodes (0–60),
+    mag_placement (spread/core/random), mag_cycle_count (50/100/200/400/800),
+    mag_storm (bool) for the fleet; mag_threshold_sigma (3–12) and
+    mag_common_mode (bool) for the server's detector. Applied without a fleet
+    restart.
 
     Also accepted — fleet scene keys, deliberately NO defaults (state.py's
     only-if-set pattern: a fresh backend never ships these, so the fleet
@@ -540,6 +569,17 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
                     raise HTTPException(400, detail=f"{k} must be 0.0–1.0")
             updated[k] = v
 
+    # Magnetometer settings (simulation only). Refused outright when the fleet
+    # subsystem is off: this route is mounted everywhere, and a setting that
+    # does nothing must not be accepted as if it had.
+    if any(k in sim_magnetometer.SETTINGS_DEFAULTS for k in body):
+        if not _magnetometers_available():
+            raise HTTPException(400, detail="Magnetometer settings need SYNTHETIC_FLEET_ENABLED")
+        try:
+            updated.update(sim_magnetometer.validate_settings(body))
+        except ValueError as exc:
+            raise HTTPException(400, detail=str(exc)) from exc
+
     # frac_adsb_outage and frac_live_dark are intentionally absent here —
     # see the docstring.
     total_frac = (
@@ -553,7 +593,7 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
     state.simulation_config.update(updated)
     state.simulation_config["_updated_at"] = time.time()
     return Response(
-        content=orjson.dumps({"ok": True, "config": state.simulation_config}),
+        content=orjson.dumps({"ok": True, "config": _simulation_config_view()}),
         media_type="application/json",
     )
 

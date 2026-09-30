@@ -12,14 +12,18 @@ from collections import deque
 from collections.abc import Mapping
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+import orjson
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi.responses import Response
 
 from config.constants import is_num
 from core import state
+from core.users import require_admin
 
 # The API-key rule (and its production fail-fast) lives beside the other
 # consumers in routes.test.
 from routes.test import _verify_sim_key
+from services import sim_magnetometer
 from services.geo import valid_latlon
 from services.id_utils import is_transponder_hex, normalize_hex_key
 
@@ -197,3 +201,69 @@ async def sim_push_adsb_positions(body: dict = Body(...), _key=Depends(_verify_s
         state.bump_counter("sim_adsb_push_rejected_hex", rejected)
 
     return {"status": "ok", "updated": updated, "rejected_hex": rejected}
+
+
+# ── Simulated magnetometers ──────────────────────────────────────────────────
+# The fleet's magnetometers (retina_simulation.magnetometer) push their
+# readings here once a second; services/sim_magnetometer.py detects anomalous
+# objects in them across the network. The reads below serve the admin /sim map
+# and are admin-only, like the page. None of it touches the radar path: no
+# node registry, no ground-truth or anomaly stores, no websocket feed.
+
+
+@router.post("/api/sim/magnetometer/push")
+async def sim_push_magnetometers(body: dict = Body(...), _key=Depends(_verify_sim_key)):
+    """One second (or a few, after a missed push) of every magnetometer."""
+    settings = sim_magnetometer.effective_settings(state.simulation_config)
+    try:
+        result = sim_magnetometer.network.ingest(body, settings)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if result["rejected"]:
+        state.bump_counter("sim_magnetometer_push_rejected", result["rejected"])
+    return {"status": "ok", **result}
+
+
+@router.get("/api/sim/magnetometers")
+async def sim_magnetometers(_admin=Depends(require_admin)):
+    """Every magnetometer's state and recent score, the latest events, and the
+    live scorecard (false alarms per node-hour with its 95 % interval)."""
+    settings = sim_magnetometer.effective_settings(state.simulation_config)
+    return Response(content=orjson.dumps(sim_magnetometer.network.snapshot(settings)), media_type="application/json")
+
+
+@router.get("/api/sim/magnetometers/{node_id}")
+async def sim_magnetometer_detail(
+    node_id: str,
+    window: int = Query(600, ge=60, le=3600),
+    _admin=Depends(require_admin),
+):
+    """One magnetometer's residual and score over the last ``window`` seconds."""
+    settings = sim_magnetometer.effective_settings(state.simulation_config)
+    detail = sim_magnetometer.network.node_detail(node_id, window, settings)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="no such magnetometer")
+    return Response(content=orjson.dumps(detail), media_type="application/json")
+
+
+@router.post("/api/sim/magnetometers/flyby")
+async def sim_magnetometer_flyby(body: dict = Body(...), _admin=Depends(require_admin)):
+    """Ask the fleet to fly a UAP past a magnetometer.
+
+    Carried to the fleet on its config poll as ``mag_flyby``, with a number
+    for people and the time of the request. The fleet uses the time to fly it
+    once, and to ignore it if it only sees it minutes later (a restart). It is
+    not a setting and is not persisted.
+    """
+    try:
+        request = sim_magnetometer.validate_flyby(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    previous = state.simulation_config.get("mag_flyby") or {}
+    now = time.time()
+    flyby = {**request, "seq": int(previous.get("seq", 0)) + 1, "requested_at": now}
+    state.simulation_config["mag_flyby"] = flyby
+    state.simulation_config["_updated_at"] = now
+    # The new stamp goes back so the Physics tab can adopt it, as it does after
+    # its own PUT, rather than read its own request as someone else's change.
+    return {"ok": True, "flyby": flyby, "updated_at": now}
