@@ -13,9 +13,9 @@ const NO_TRUTH_CLASSES: ReadonlySet<string> = new Set();
  * picture, not part of the chrome, so it now sits on the map and collapses to
  * its header for anyone who has learnt the colours.
  */
-export default function MapLegend({ colorByAlt, showGroundTruth, truthClasses = NO_TRUTH_CLASSES, showIlluminators, hasPlayback }) {
+export default function MapLegend({ colorByAlt, showGroundTruth, truthClasses = NO_TRUTH_CLASSES, showIlluminators, hasPlayback, showMagnetometers = false }) {
   const palette = usePalette();
-  const { ILLUMINATOR, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED, NODE } = palette;
+  const { ILLUMINATOR, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED, NODE, WARN, ANOMALY } = palette;
   const [open, setOpen] = useMapPreference("legendOpen", true);
 
   return (
@@ -53,16 +53,24 @@ export default function MapLegend({ colorByAlt, showGroundTruth, truthClasses = 
           )}
           <LegendItem color={NODE} label="Node" />
           {showIlluminators && <LegendItem color={ILLUMINATOR} label="Illuminator" />}
+          {showMagnetometers && (
+            <>
+              {/* Square, like the badge, so a magnetometer is never read as a node dot. */}
+              <LegendItem color={NODE} label="Magnetometer" square />
+              <LegendItem color={WARN} label="Magnetometer, elevated" square />
+              <LegendItem color={ANOMALY} label="Magnetometer, detecting" square />
+            </>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function LegendItem({ color, label }) {
+function LegendItem({ color, label, square = false }) {
   return (
     <span className="legend-item">
-      <span className="legend-dot" style={{ background: color }} /> {label}
+      <span className={square ? "legend-dot legend-square" : "legend-dot"} style={{ background: color }} /> {label}
     </span>
   );
 }

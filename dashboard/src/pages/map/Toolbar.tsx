@@ -25,6 +25,9 @@ export default function Toolbar({
   showTrails,
   showGroundTruth,
   truthAvailable,
+  magnetometersAvailable = false,
+  showMagnetometers = false,
+  onToggleMagnetometers = undefined,
   showAnomaliesOnly,
   showIlluminators,
   colorByAlt,
@@ -208,6 +211,16 @@ export default function Toolbar({
               title="Overlay the ADS-B positions the solver is being measured against"
             >
               Debug Truth
+            </button>
+          )}
+          {magnetometersAvailable && (
+            <button
+              className="btn btn-secondary toggle-btn"
+              aria-pressed={showMagnetometers}
+              onClick={onToggleMagnetometers}
+              title="Show the simulated magnetometers beside their radar sites, their detections and the false-alarm scorecard"
+            >
+              Magnetometers
             </button>
           )}
           <button

@@ -11,6 +11,7 @@ import { activePalette, activeTheme } from "./mapPalette";
 import { truthClass, truthFill, truthLegend } from "./truthColor";
 import { withCartoKey } from "./utils/basemap";
 import { TILES } from "./utils/tiles";
+import MagnetometerSettings from "./magnetometers/MagnetometerSettings";
 import {
   formatKm,
   formatPct,
@@ -794,6 +795,16 @@ export default function PhysicsSettings() {
           </div>
         );
       })()}
+
+      {/* ── Magnetometers (simulation only; absent without the fleet) ── */}
+      <MagnetometerSettings
+        config={config}
+        onApplied={(stamp) => {
+          // Our own write: adopt its stamp so the drift check above does not
+          // report it as the config moving underneath the page.
+          lastStampRef.current = stamp;
+        }}
+      />
 
       {/* ── Ground Truth Map ────────────────────────────────────────── */}
       {(animatedAircraft.length > 0 || (gtData && gtData.aircraft.length > 0)) && (() => {

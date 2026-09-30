@@ -94,6 +94,11 @@ import { useResolvedTheme } from "../../context/ThemeContext";
 const DEFAULT_BASEMAP = { dark: "voyager", light: "positron" };
 import { reconcileAdsbPairs, snapTrack, sweepStaleRadar } from "./trackStores";
 import StatsOverlay from "./StatsOverlay";
+import MagnetometerLayer from "./magnetometers/MagnetometerLayer";
+import MagnetometerPanel from "./magnetometers/MagnetometerPanel";
+import MagnetometerSummary from "./magnetometers/MagnetometerSummary";
+import { useMagnetometers } from "./magnetometers/useMagnetometers";
+import { useMagnetometerAlerts } from "./magnetometers/useMagnetometerAlerts";
 import ShortcutHelp from "./ShortcutHelp";
 
 // Fix default icon paths
@@ -1310,6 +1315,14 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   // The URL hash carries the preference too, so a shared link keeps it.
   const truthAvailable = Boolean(syntheticFleet) && mode !== "real";
   const showGroundTruth = truthAvailable && groundTruthPref;
+  // Simulated magnetometers: the /sim page only, and only where the server
+  // runs a fleet. Polled from their own admin endpoint, not the aircraft feed.
+  const magnetometersAvailable = Boolean(syntheticFleet) && mode === "synthetic";
+  const [magnetometerPref, setShowMagnetometers] = useMapPreference("layer.magnetometers.sim", true);
+  const showMagnetometers = magnetometersAvailable && magnetometerPref;
+  const magNetwork = useMagnetometers(showMagnetometers);
+  const [selectedMagId, setSelectedMagId] = useState(null);
+  useMagnetometerAlerts(magNetwork);
   const [showLabels, setShowLabels] = useMapPreference("layer.labels", initialLayers?.labels ?? true);
   const [selectedHex, setSelectedHex] = useState(restoreSelection ? initialHash.hex ?? null : null);
   const [selectedNodeRef, setSelectedNodeRef] = useState(null);
@@ -1922,7 +1935,21 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   const handleMapClick = useCallback(() => {
     setSelectedNodeRef(null);
     setSelectedHex(null);
+    setSelectedMagId(null);
   }, []);
+
+  // A magnetometer and an aircraft share the side panel: opening one closes
+  // the other.
+  const handleSelectMagnetometer = useCallback((nodeId) => {
+    setSelectedHex(null);
+    setSelectedMagId((prev) => (prev === nodeId ? null : nodeId));
+  }, []);
+  useEffect(() => {
+    if (selectedHex) setSelectedMagId(null);
+  }, [selectedHex]);
+  // Radar site positions by ref, so each magnetometer badge sits exactly on
+  // the site it shares (synthetic nodes publish under their own ids).
+  const siteByRef = useMemo(() => new Map(nodes.map((n) => [n.node_ref, [n.rx_lat, n.rx_lon]])), [nodes]);
 
   /* ── URL-hash mirror ─────────────────────────────────────────
      One throttled writer fed by both map move/zoom events and
@@ -2103,6 +2130,9 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
         showTrails={showTrails}
         showGroundTruth={showGroundTruth}
         truthAvailable={truthAvailable}
+        magnetometersAvailable={magnetometersAvailable}
+        showMagnetometers={showMagnetometers}
+        onToggleMagnetometers={() => setShowMagnetometers((v) => !v)}
         showAnomaliesOnly={showAnomaliesOnly}
         showIlluminators={showIlluminators}
         colorByAlt={colorByAlt}
@@ -2179,9 +2209,13 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
         />
 
         <div className="live-map-area">
+          {showMagnetometers && magNetwork && (
+            <MagnetometerSummary network={magNetwork} onSelect={handleSelectMagnetometer} />
+          )}
           <MapLegend
             colorByAlt={colorByAlt}
             showGroundTruth={showGroundTruth}
+            showMagnetometers={showMagnetometers && Boolean(magNetwork?.nodes?.length)}
             truthClasses={truthClassesPresent}
             showIlluminators={showIlluminators}
             hasPlayback={paused && historyRef.current.length > 0}
@@ -2234,6 +2268,16 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
                 grouping, and react-leaflet leaves unchanged markers alone.
                 SVG circles all share one composited layer — no per-element pan cost. */}
             <NodeMarkersLayer visibleNodes={nodes} onSelectNode={handleSelectNode} selectedNodeRef={selectedNodeRef} />
+
+            {/* Simulated magnetometers beside their radar sites (/sim only) */}
+            {showMagnetometers && magNetwork && (
+              <MagnetometerLayer
+                network={magNetwork}
+                sitePositions={siteByRef}
+                selectedId={selectedMagId}
+                onSelect={handleSelectMagnetometer}
+              />
+            )}
 
             {/* Illuminators (TX towers our nodes use) — off by default, deduped per transmitter */}
             <IlluminatorsLayer visibleNodes={nodes} showIlluminators={showIlluminators} />
@@ -2620,6 +2664,10 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
             />
           )}
         </div>
+
+        {!selectedAc && selectedMagId && magNetwork && (
+          <MagnetometerPanel nodeId={selectedMagId} network={magNetwork} onClose={() => setSelectedMagId(null)} />
+        )}
 
         {selectedAc && (
           <AircraftDetailPanel

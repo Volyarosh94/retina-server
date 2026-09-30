@@ -288,6 +288,64 @@ describe("PhysicsSettings", () => {
     vi.useRealTimers();
   });
 
+  // ── Magnetometers ────────────────────────────────────────────────────
+  // A section of its own, present only where the server returns the mag_*
+  // keys (a synthetic fleet), with its own Apply.
+
+  const MAG = {
+    mag_enabled: true,
+    mag_n_nodes: 8,
+    mag_placement: "spread",
+    mag_cycle_count: 200,
+    mag_storm: false,
+    mag_threshold_sigma: 5.5,
+    mag_common_mode: true,
+  };
+
+  it("shows no magnetometer section where the server returns no magnetometer settings", async () => {
+    installFetchMock();
+    renderSettings();
+    await waitFor(() => {
+      expect(screen.getByText(/spawns 20–40/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Magnetometers")).not.toBeInTheDocument();
+  });
+
+  it("does not flag drift for the magnetometer section's own apply, and keeps its keys off the page's", async () => {
+    const configRef = { current: { ...APPLIED, ...MAG } as Record<string, unknown> };
+    const fetchMock = installFetchMock(configRef);
+    // The section polls the network, which this mock does not answer.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.useFakeTimers();
+    renderSettings();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByText("Magnetometers")).toBeInTheDocument();
+
+    configRef.current = { ...APPLIED, ...MAG, mag_threshold_sigma: 6.5, _updated_at: 3000 };
+    await act(async () => {
+      fireEvent.change(screen.getByRole("slider", { name: "Detection threshold" }), { target: { value: "6.5" } });
+      fireEvent.click(screen.getByRole("button", { name: "Apply magnetometer settings" }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await pollOnce();
+    expect(document.body.textContent).not.toMatch(/changed outside this page/);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Apply to Simulator/i }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const puts = fetchMock.mock.calls
+      .filter(([, opts]) => opts?.method === "PUT")
+      .map(([, opts]) => JSON.parse(String(opts?.body)) as Record<string, unknown>);
+    const magApply = puts.find((body) => "mag_threshold_sigma" in body);
+    const pageApply = puts.find((body) => "frac_anomalous" in body);
+    expect(magApply).toEqual({ ...MAG, mag_threshold_sigma: 6.5 });
+    expect(Object.keys(pageApply ?? {}).filter((k) => k.startsWith("mag_"))).toEqual([]);
+
+    vi.useRealTimers();
+  });
+
   // ── Polling ───────────────────────────────────────────────────────────
 
   it("polls each endpoint on its own period, and stops when the page closes", async () => {

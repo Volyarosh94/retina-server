@@ -5,6 +5,7 @@ import LiveAircraftMap from "./LiveAircraftMap";
 import { MapThemeProvider } from "./useMapTheme";
 import { ThemeProvider, useTheme } from "../../context/ThemeContext";
 import { stubMatchMedia } from "../../test/matchMedia";
+import { network as magnetometerNetwork } from "../../test/magnetometerNetwork";
 
 // Leaflet layers need a browser layout. Keep the real map controller, toolbar,
 // playback and feed lifecycle; geometry and layer helpers have their own tests.
@@ -301,4 +302,39 @@ it("offers no ground truth on the real-only feed even beside a fleet", async () 
   render(<MapThemeProvider><LiveAircraftMap feed="real" /></MapThemeProvider>);
   await screen.findByRole("checkbox", { name: "My nodes only" });
   expect(screen.queryByRole("button", { name: "Debug Truth" })).not.toBeInTheDocument();
+});
+
+it("offers the magnetometers on /sim beside a synthetic fleet, and hides them on request", async () => {
+  owner.syntheticFleet = true;
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
+    ok: true,
+    json: async () =>
+      url.endsWith("/sim/magnetometers") ? magnetometerNetwork()
+        : url.endsWith("/auth/me/nodes") ? [{ node_ref: "mine" }]
+          : {},
+  })));
+  render(<MapThemeProvider><LiveAircraftMap feed="synthetic" /></MapThemeProvider>);
+  const toggle = await screen.findByRole("button", { name: "Magnetometers" });
+  expect(toggle).toHaveAttribute("aria-pressed", "true");
+  expect(await screen.findByText("3 placed · 1 detecting")).toBeInTheDocument();
+
+  fireEvent.click(toggle);
+  expect(toggle).toHaveAttribute("aria-pressed", "false");
+  expect(screen.queryByText("3 placed · 1 detecting")).not.toBeInTheDocument();
+});
+
+it("offers no magnetometers, and asks for none, off /sim or without a fleet", async () => {
+  owner.syntheticFleet = true;
+  const real = render(<MapThemeProvider><LiveAircraftMap feed="real" /></MapThemeProvider>);
+  await screen.findByRole("checkbox", { name: "My nodes only" });
+  expect(screen.queryByRole("button", { name: "Magnetometers" })).not.toBeInTheDocument();
+  real.unmount();
+
+  owner.syntheticFleet = false;
+  render(<MapThemeProvider><LiveAircraftMap feed="synthetic" /></MapThemeProvider>);
+  await screen.findByRole("button", { name: /Pause/ });
+  expect(screen.queryByRole("button", { name: "Magnetometers" })).not.toBeInTheDocument();
+  expect(vi.mocked(fetch).mock.calls.map(([url]) => String(url))).not.toContainEqual(
+    expect.stringContaining("/sim/magnetometers"),
+  );
 });
