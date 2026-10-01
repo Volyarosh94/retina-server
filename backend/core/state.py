@@ -1195,9 +1195,15 @@ position_jump_events: int = 0
 # id standing in for a transponder).  A nonzero value means an outdated fleet
 # is still pushing dark aircraft into the ADS-B path — see routes/sim_ingest.
 sim_adsb_push_rejected_hex: int = 0
-# Magnetometer entries refused by /api/sim/magnetometer/push: a host that is
-# not a synthetic node, a bad position, a malformed id.
+# Magnetometer entries skipped by /api/sim/magnetometer/push: well-formed, but
+# not one this server publishes (a host that is not a synthetic node, an id
+# without the mag- prefix, a position off the globe). Published as
+# detector.entries_rejected in GET /api/sim/magnetometers.
 sim_magnetometer_push_rejected: int = 0
+# Magnetometer pushes refused whole with 400: a field the fleet could not have
+# sent. The fleet drops a refused push, so each one is readings lost.
+# Published as detector.pushes_refused in GET /api/sim/magnetometers.
+sim_magnetometer_push_refused: int = 0
 
 # Solver end-to-end latency (seconds from queue submission to solve completion)
 solver_last_latency_s: float = 0.0

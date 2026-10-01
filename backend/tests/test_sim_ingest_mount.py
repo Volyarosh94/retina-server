@@ -1,10 +1,11 @@
 """The gate on the simulation ingest mount.
 
-routes/sim_ingest.py holds the two POSTs the synthetic fleet writes
-state.adsb_aircraft and state.ground_truth_trails through, and main.py mounts
-that router only when `synthetic_fleet_enabled` says so. Since ClickUp 86cb49d29
-that rule is the whole of the gate on the write path: the mount used to follow
-from RETINA_ENV not being `production`, so a deployment got the path for being
+routes/sim_ingest.py holds the POSTs the synthetic fleet writes through
+(state.adsb_aircraft, state.ground_truth_trails and the simulated magnetometer
+network) and the admin reads beside them, and main.py mounts that router only
+when `synthetic_fleet_enabled` says so. Since ClickUp 86cb49d29 that rule is
+the whole of the gate on the write path: the mount used to follow from
+RETINA_ENV not being `production`, so a deployment got the path for being
 named `test`. Dropping the check would silently reopen the path everywhere
 rather than fail anything, which is what these pin.
 
