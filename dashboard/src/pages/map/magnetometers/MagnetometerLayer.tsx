@@ -5,6 +5,7 @@ import { usePalette } from "../useMapTheme";
 import { annulus } from "./geometry";
 import { badgeSvg, type BadgeInk } from "./badge";
 import {
+  fleetNow,
   formatRange,
   formatScore,
   formatSeconds,
@@ -74,7 +75,9 @@ interface Props {
 
 function MagnetometerLayer({ network, sitePositions, selectedId, onSelect }: Props) {
   const palette = usePalette();
-  const nowMs = network.now_ms;
+  // The fleet's clock, as the events' and readings' times are: a band lingers
+  // its minute by the same clock that ended it.
+  const nowMs = fleetNow(network);
   const placed = useMemo(
     () =>
       network.nodes.map((node) => {

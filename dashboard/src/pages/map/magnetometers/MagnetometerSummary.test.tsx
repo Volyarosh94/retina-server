@@ -78,23 +78,37 @@ describe("MagnetometerSummary", () => {
   // The model behind an event's confidence needs the common mode subtracted,
   // no storm and a reading a second; the card says which does not hold.
   it("says when readings are not a second apart, and that confidences are then not given", () => {
-    render(<MagnetometerSummary network={uncalibrated({}, { reading_period_s: 1.6 })} onSelect={() => {}} />);
+    render(<MagnetometerSummary network={uncalibrated({}, { reading_period_s: 1.6, reading_period_calibrated: false })} onSelect={() => {}} />);
     expect(screen.getByText(/^Threshold 5\.5σ, common mode removed\. RM3100/)).toBeInTheDocument();
     expect(caveat()).toHaveTextContent(/^No confidence for detections opening now: the noise model does not hold with readings 1\.6 s apart, not 1 s\.$/);
     expect(screen.queryByText(/Event confidences are not calibrated/)).not.toBeInTheDocument();
   });
 
-  // The server judges the spacing before rounding it: at 1.0999 s it holds,
-  // and arrives as 1.1.
-  it("takes the server's word on a spacing at the edge of the model", () => {
+  // The server judges the spacing before rounding it, and with a margin: at
+  // 1.0999 s it holds and arrives as 1.1; once out, 1.07 s is not back in.
+  it("takes the server's word on the readings' spacing, never the rounded figure's", () => {
     const base = network();
     const { rerender } = render(
-      <MagnetometerSummary network={{ ...base, detector: { ...base.detector, reading_period_s: 1.1 } }} onSelect={() => {}} />,
+      <MagnetometerSummary network={{ ...base, detector: { ...base.detector, reading_period_s: 1.1, reading_period_calibrated: true } }} onSelect={() => {}} />,
     );
     expect(caveat()).toBeNull();
-    // Not calibrated with nothing else amiss: the spacing is what fails.
-    rerender(<MagnetometerSummary network={uncalibrated({}, { reading_period_s: 1.1 })} onSelect={() => {}} />);
-    expect(caveat()).toHaveTextContent(/the noise model does not hold with readings 1\.1 s apart, not 1 s\.$/);
+    rerender(<MagnetometerSummary network={uncalibrated({}, { reading_period_s: 1.07, reading_period_calibrated: false })} onSelect={() => {}} />);
+    expect(caveat()).toHaveTextContent(/the noise model does not hold with readings 1\.07 s apart, not 1 s\.$/);
+  });
+
+  // For whoever is working out why readings are missing; nothing at all while
+  // the server has turned nothing away.
+  it("says what the server turned away from the fleet, only when it turned something away", () => {
+    const base = network();
+    const { rerender } = render(<MagnetometerSummary network={base} onSelect={() => {}} />);
+    expect(screen.queryByText(/^Since it started, the server has/)).not.toBeInTheDocument();
+    expect(document.querySelector(".mag-summary-fleet")).toBeNull();
+
+    rerender(<MagnetometerSummary network={{ ...base, detector: { ...base.detector, pushes_refused: 3, entries_rejected: 0 } }} onSelect={() => {}} />);
+    const line = screen.getByText("Since it started, the server has refused 3 pushes from the fleet (their readings are lost).");
+    // A fact to look into, in the secondary ink, not a warning.
+    expect(line).toHaveClass("mag-summary-fleet");
+    expect(line).not.toHaveClass("mag-caveat");
   });
 
   it("says nothing of calibration while the model holds", () => {

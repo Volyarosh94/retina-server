@@ -1,8 +1,8 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MapContainer } from "react-leaflet";
 import { describe, expect, it, vi } from "vitest";
 import MagnetometerLayer from "./MagnetometerLayer";
-import { magEvent, network, NOW_MS, withNode } from "../../../test/magnetometerNetwork";
+import { magEvent, network, NOW_MS, onFleetClock, withNode } from "../../../test/magnetometerNetwork";
 import type { MagNetwork, MagNode } from "./types";
 
 // A band is an SVG path Leaflet can only draw with a layout; the props the
@@ -116,6 +116,27 @@ describe("MagnetometerLayer", () => {
     const old = magEvent({ active: false, end_ms: NOW_MS - 120_000 });
     const gone = renderLayer({ ...net, nodes: net.nodes.map((n) => (n.node_id === "mag-synth-002" ? { ...n, state: "quiet", event: old } : n)) });
     expect(gone.queryByTestId("band")).toBeNull();
+  });
+
+  // The band's minute is the fleet's, the clock its events end by: a fleet two
+  // minutes behind the server's must not lose it at once, nor one ahead keep
+  // it past its minute.
+  it.each([
+    ["behind", -120_000],
+    ["ahead of", 120_000],
+  ])("keeps a closed detection's band for a minute by a fleet clock %s the server's", (_, offset) => {
+    const base = onFleetClock(network(), offset);
+    const fleetNow = NOW_MS + offset - 1_000;
+    const ended = (agoMs: number) =>
+      renderLayer({
+        ...base,
+        nodes: base.nodes.map((n) =>
+          n.node_id === "mag-synth-002" ? { ...n, state: "quiet", event: magEvent({ active: false, end_ms: fleetNow - agoMs }) } : n,
+        ),
+      });
+    expect(ended(30_000).getByTestId("band")).toHaveAttribute("data-fill", "0.07");
+    cleanup();
+    expect(ended(90_000).queryByTestId("band")).toBeNull();
   });
 
   it("draws a state it does not know as a grey badge named by the server's word, rather than failing", () => {

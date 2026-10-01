@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import MagnetometerPanel from "./MagnetometerPanel";
-import { magEvent, network, NOW_MS, withNode } from "../../../test/magnetometerNetwork";
+import { magEvent, network, NOW_MS, onFleetClock, withNode } from "../../../test/magnetometerNetwork";
 import type { MagDetail, MagEvent } from "./types";
 
 // Recharts measures a real layout; under jsdom there is none, so the chart
@@ -444,7 +444,12 @@ describe("MagnetometerPanel", () => {
     const net = {
       ...withNode(base, "mag-synth-002", { event: magEvent({ calibrated: false }) }),
       storm: true,
-      detector: { ...base.detector, reading_period_s: 1.6, false_alarm_model: { ...base.detector.false_alarm_model, calibrated: false } },
+      detector: {
+        ...base.detector,
+        reading_period_s: 1.6,
+        reading_period_calibrated: false,
+        false_alarm_model: { ...base.detector.false_alarm_model, calibrated: false },
+      },
     };
     render(<MagnetometerPanel nodeId="mag-synth-002" network={net} onClose={() => {}} />);
     expect(screen.getByText(/so it carries no confidence\. The model does not hold now either, with a storm running and readings 1\.6 s apart, not 1 s\.$/)).toBeInTheDocument();
@@ -501,19 +506,48 @@ describe("MagnetometerPanel", () => {
   });
 
   // Ended at its last reading, a silent magnetometer's charts read as current
-  // ones, its readings minutes old at their right edge.
-  it("charts a magnetometer that stopped reporting up to now, so its silence shows", async () => {
-    const last = NOW_MS - 300_000;
+  // ones, its readings minutes old at their right edge. Now is the fleet's
+  // clock, as the readings' times are, whatever the server's clock says.
+  it.each([
+    ["on the server's clock", 0],
+    ["two minutes behind the server's", -120_000],
+    ["two minutes ahead of the server's", 120_000],
+  ])("charts a magnetometer that stopped reporting up to now by a fleet clock %s, so its silence shows as long as it is", async (_, offset) => {
+    const last = NOW_MS + offset - 300_000;
     details["mag-synth-002"] = detail("mag-synth-002", [magEvent(), EARLIER], [1, 1.1, 1.2], [last - 2_000, last - 1_000, last]);
-    const silent = withNode(network(), "mag-synth-002", { state: "stale", last_ms: last });
+    // Five minutes silent; the others read a second ago, by the fleet's clock.
+    const silent = withNode(onFleetClock(network(), offset), "mag-synth-002", { state: "stale", last_ms: last });
     const { rerender } = render(<MagnetometerPanel nodeId="mag-synth-002" network={silent} onClose={() => {}} />);
     await screen.findByText("78 nT, 6.6σ, false alarm");
     const ends = () =>
       [/^Detection score/, /^Residual field/, /^Measured field/].map((name) => JSON.parse(chartNamed(name).getByTestId("x-axis").getAttribute("data-domain")!)[1]);
-    expect(ends()).toEqual([NOW_MS, NOW_MS, NOW_MS]);
-    // And on, with the network's clock.
+    expect(ends()).toEqual(Array(3).fill(last + 299_000));
+    // And on, as the server's clock runs on with no push.
     rerender(<MagnetometerPanel nodeId="mag-synth-002" network={{ ...silent, now_ms: NOW_MS + 4_000 }} onClose={() => {}} />);
-    expect(ends()).toEqual([NOW_MS + 4_000, NOW_MS + 4_000, NOW_MS + 4_000]);
+    expect(ends()).toEqual(Array(3).fill(last + 303_000));
+  });
+
+  // Its readings keep the fleet's time, and a reporting magnetometer is
+  // charted up to its last one: a fleet behind the server's clock leaves no
+  // gap at the right edge.
+  it("charts a reporting magnetometer up to its last reading, whatever the fleet's clock", async () => {
+    const last = NOW_MS - 121_000;
+    details["mag-synth-002"] = detail("mag-synth-002", [magEvent(), EARLIER], [1, 1.1, 1.2], [last - 2_000, last - 1_000, last]);
+    render(<MagnetometerPanel nodeId="mag-synth-002" network={onFleetClock(network(), -120_000)} onClose={() => {}} />);
+    await screen.findByText("78 nT, 6.6σ, false alarm");
+    expect(JSON.parse(chartNamed(/^Detection score/).getByTestId("x-axis").getAttribute("data-domain")!)[1]).toBe(last);
+  });
+
+  // The server sends the ten minutes up to a magnetometer's own last reading:
+  // one silent for longer has nothing in the charts' ten minutes.
+  it("says a magnetometer silent for more than ten minutes has no readings in them", async () => {
+    const last = NOW_MS - 900_000;
+    details["mag-synth-002"] = detail("mag-synth-002", [magEvent(), EARLIER], [1, 1.1, 1.2], [last - 2_000, last - 1_000, last]);
+    render(
+      <MagnetometerPanel nodeId="mag-synth-002" network={withNode(network(), "mag-synth-002", { state: "stale", last_ms: last })} onClose={() => {}} />,
+    );
+    expect((await screen.findAllByText("No readings in the last 10 minutes.")).length).toBe(3);
+    expect(screen.queryAllByTestId("chart")).toHaveLength(0);
   });
 
   // Recharts drops ticks it thinks crowd each other ("0, 10, 20, 40"), and

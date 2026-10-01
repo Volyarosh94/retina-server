@@ -3,6 +3,7 @@ import { usePalette } from "../useMapTheme";
 import type { CSSProperties } from "react";
 import {
   eventVerdict,
+  fleetRefusals,
   formatFalseAlarmCount,
   formatFalseAlarmInterval,
   formatMoment,
@@ -49,6 +50,9 @@ export default function MagnetometerSummary({
   // the noise model does not hold as the network runs now: events opened
   // meanwhile carry no confidence, while older ones keep theirs.
   const gaps = runningModelGaps(network);
+  // What the server turned away from the fleet, for whoever is working out
+  // why readings are missing; nothing at all while it has turned nothing away.
+  const refusals = fleetRefusals(network.detector);
   const note =
     `Threshold ${settings.mag_threshold_sigma.toFixed(1)}σ${network.detector.common_mode_applied ? ", common mode removed" : ""}.` +
     ` RM3100 at ${network.sensor.cycle_count ?? "—"} cycles, ${network.sensor.noise_nt ?? "—"} nT noise;` +
@@ -101,6 +105,7 @@ export default function MagnetometerSummary({
               No confidence for detections opening now: the noise model does not hold with {joinReasons(gaps)}.
             </div>
           )}
+          {refusals && <div className="mag-summary-fleet">{refusals}</div>}
           {network.events.length > 0 && (
             <ul className="mag-event-list">
               {network.events.slice(0, 4).map((e) => {

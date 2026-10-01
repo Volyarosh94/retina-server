@@ -90,7 +90,10 @@ export interface MagStats {
   passes: number;
   /** Of those, the ones a detection the truth confirms was open during. */
   passes_detected: number;
-  /** Counted passes still open: one not yet found still may be. */
+  /**
+   * Counted passes still open at a magnetometer still reporting: one not yet
+   * found still may be. A silent magnetometer's pass is not counted here.
+   */
   passes_open: number;
   pass_min_nt: number;
 }
@@ -111,7 +114,12 @@ export interface MagNetwork {
    * restarted: its events and their numbering start again.
    */
   run_id: string;
+  /** When the server last took in a push, by its own clock. */
   updated_ms: number;
+  /**
+   * The server's clock as it answered. Readings, events and `last_ms` carry
+   * the fleet's clock, which may run minutes behind or ahead of it.
+   */
   now_ms: number;
   settings: MagSettings;
   sensor: { model?: string; cycle_count?: number; noise_nt?: number; lsb_nt?: number };
@@ -122,6 +130,20 @@ export interface MagNetwork {
     dof: number;
     /** The network's time between readings, in seconds to two places; null until known. */
     reading_period_s: number | null;
+    /**
+     * Whether that is near enough a second for the false-alarm model, as the
+     * server judges it on the unrounded figure: out beyond 10 %, back within
+     * 5 %. Never to be judged again from `reading_period_s`.
+     */
+    reading_period_calibrated: boolean;
+    /** Pushes the server refused whole since it started: the fleet drops each, so its readings are lost. */
+    pushes_refused: number;
+    /**
+     * Entries the server skipped since it started, though well formed: a host
+     * that is not a synthetic radar node, an id not starting `mag-`, a
+     * position off the globe.
+     */
+    entries_rejected: number;
     /**
      * Whether the network's common mode is being subtracted now: the setting
      * is on and at least six magnetometers with a static level are reporting

@@ -89,8 +89,11 @@ export function network(patch: Partial<MagNetwork> = {}): MagNetwork {
       scales_s: [2, 4, 8, 16, 32, 64],
       dof: 9,
       reading_period_s: 1,
+      reading_period_calibrated: true,
       common_mode_applied: true,
       false_alarm_model: { coefficient: 480, power: 2, calibrated: true },
+      pushes_refused: 0,
+      entries_rejected: 0,
     },
     nodes: [
       magNode({ event: FALSE_ALARM }),
@@ -141,4 +144,24 @@ export function network(patch: Partial<MagNetwork> = {}): MagNetwork {
 /** The fixture with one magnetometer's fields changed. */
 export function withNode(base: MagNetwork, nodeId: string, patch: Partial<MagNode>): MagNetwork {
   return { ...base, nodes: base.nodes.map((n) => (n.node_id === nodeId ? { ...n, ...patch } : n)) };
+}
+
+/**
+ * The fixture on a fleet clock `offsetMs` from the server's: every reading,
+ * event and last reading moved by it, the server's own times (now_ms,
+ * updated_ms) left alone. Negative is a fleet running behind.
+ */
+export function onFleetClock(base: MagNetwork, offsetMs: number): MagNetwork {
+  const move = (e: MagEvent | null): MagEvent | null =>
+    e && {
+      ...e,
+      start_ms: e.start_ms + offsetMs,
+      peak_ms: e.peak_ms + offsetMs,
+      end_ms: e.end_ms === null ? null : e.end_ms + offsetMs,
+    };
+  return {
+    ...base,
+    nodes: base.nodes.map((n) => ({ ...n, last_ms: n.last_ms + offsetMs, event: move(n.event) })),
+    events: base.events.map((e) => move(e) as MagEvent),
+  };
 }

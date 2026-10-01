@@ -9,6 +9,7 @@ import {
   commonModeLeftIn,
   eventVerdict,
   fieldAxis,
+  fleetNow,
   formatConfidence,
   formatNoiseInterval,
   formatRange,
@@ -127,9 +128,11 @@ function PanelBody({ node, network }: { node: MagNode; network: MagNetwork }) {
   const rows = useMemo(() => chartRows(detail?.series), [detail]);
   // A magnetometer that has stopped reporting is charted up to now, so its
   // charts end in the silence rather than at its last reading, where they
-  // would pass for current. While it reports, its last reading is now enough,
+  // would pass for current. Now by the fleet's clock, as its readings are: a
+  // fleet minutes behind the server's would otherwise show minutes of silence
+  // that are not there. While it reports, its last reading is now enough,
   // and the network's polls leave the charts alone.
-  const silentUntilMs = node.state === "stale" ? network.now_ms : null;
+  const silentUntilMs = node.state === "stale" ? fleetNow(network) : null;
   // The whole ten minutes the panel asks for, whatever stretch of it has
   // readings: after a start or a restart they cover seconds, and ticks on
   // their own span all read the same minute.
@@ -149,12 +152,14 @@ function PanelBody({ node, network }: { node: MagNode; network: MagNetwork }) {
       : null;
   const notes = useMemo(() => {
     // Until this magnetometer's own answer is in, its charts say why they
-    // are empty rather than showing anything else.
+    // are empty rather than showing anything else. The server sends the ten
+    // minutes up to its last reading, which for one silent longer than that
+    // all fall before the charts' ten minutes.
     const detailNote = failed
       ? "Could not load the last ten minutes; trying again."
       : !detail
         ? "Loading the last ten minutes…"
-        : rows.length
+        : rows.length && frame && rows[rows.length - 1].t >= frame.domain[0]
           ? null
           : "No readings in the last 10 minutes.";
     return {
@@ -170,7 +175,7 @@ function PanelBody({ node, network }: { node: MagNode; network: MagNetwork }) {
           ? null
           : "No residual yet: it starts once the static level is set from the first two minutes of readings."),
     };
-  }, [detail, failed, rows]);
+  }, [detail, failed, rows, frame]);
 
   async function flyUap() {
     setFlying(true);

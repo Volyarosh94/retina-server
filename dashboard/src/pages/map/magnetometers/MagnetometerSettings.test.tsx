@@ -458,7 +458,12 @@ describe("MagnetometerSettings", () => {
     const base = network();
     running = {
       ...base,
-      detector: { ...base.detector, reading_period_s: 1.6, false_alarm_model: { ...base.detector.false_alarm_model, calibrated: false } },
+      detector: {
+        ...base.detector,
+        reading_period_s: 1.6,
+        reading_period_calibrated: false,
+        false_alarm_model: { ...base.detector.false_alarm_model, calibrated: false },
+      },
     };
     render(<MagnetometerSettings config={CONFIG} />);
     expect(await screen.findByText(/^Predicted: not calibrated with readings 1\.6 s apart, not 1 s\. The model covers sensor noise and daily variation, with the common mode removed and a reading a second\./)).toBeInTheDocument();

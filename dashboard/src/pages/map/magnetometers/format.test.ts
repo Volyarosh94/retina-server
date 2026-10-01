@@ -17,6 +17,8 @@ import {
   formatRange,
   formatScore,
   eventVerdict,
+  fleetNow,
+  fleetRefusals,
   isLive,
   isRecent,
   minuteTicks,
@@ -35,7 +37,7 @@ import {
   withAlpha,
 } from "./format";
 import type { MagEvent, MagState, MagStats } from "./types";
-import { network } from "../../../test/magnetometerNetwork";
+import { network, NOW_MS, onFleetClock, withNode } from "../../../test/magnetometerNetwork";
 
 function event(patch: Partial<MagEvent> = {}): MagEvent {
   return {
@@ -417,6 +419,7 @@ describe("where the false-alarm model holds", () => {
   it("takes the server's word for what is running, and gives every reason it does not hold", () => {
     const base = network();
     const uncalibrated = { ...base.detector, false_alarm_model: { ...base.detector.false_alarm_model, calibrated: false } };
+    const offSpacing = { ...uncalibrated, reading_period_calibrated: false };
     expect(runningModelGaps(base)).toEqual([]);
     expect(runningModelGaps({ ...base, storm: true, detector: uncalibrated })).toEqual(["a storm running"]);
     expect(runningModelGaps({ ...base, detector: { ...uncalibrated, common_mode_applied: false } })).toEqual([
@@ -429,42 +432,83 @@ describe("where the false-alarm model holds", () => {
         detector: { ...uncalibrated, common_mode_applied: false },
       }),
     ).toEqual(["the common mode left in"]);
-    expect(runningModelGaps({ ...base, detector: { ...uncalibrated, reading_period_s: 1.6 } })).toEqual(["readings 1.6 s apart, not 1 s"]);
-    expect(runningModelGaps({ ...base, detector: { ...uncalibrated, reading_period_s: null } })).toEqual(["the readings' spacing not yet measured"]);
-    expect(runningModelGaps({ ...base, storm: true, detector: { ...uncalibrated, reading_period_s: 0.5 } })).toEqual([
+    expect(runningModelGaps({ ...base, detector: { ...offSpacing, reading_period_s: 1.6 } })).toEqual(["readings 1.6 s apart, not 1 s"]);
+    expect(runningModelGaps({ ...base, detector: { ...offSpacing, reading_period_s: null } })).toEqual(["the readings' spacing not yet measured"]);
+    expect(runningModelGaps({ ...base, storm: true, detector: { ...offSpacing, reading_period_s: 0.5 } })).toEqual([
       "a storm running",
       "readings 0.5 s apart, not 1 s",
     ]);
-    // Not calibrated with nothing else amiss: a spacing sent as 1.1 was over the edge.
-    expect(runningModelGaps({ ...base, detector: { ...uncalibrated, reading_period_s: 1.1 } })).toEqual(["readings 1.1 s apart, not 1 s"]);
     // Nothing it can name: it says so rather than make a reason up.
-    expect(runningModelGaps({ ...base, detector: { ...uncalibrated, reading_period_s: 1 } })).toEqual(["the settings now running"]);
+    expect(runningModelGaps({ ...base, detector: uncalibrated })).toEqual(["the settings now running"]);
   });
 
-  // The server judges the unrounded spacing, and sends it to two places.
-  it("judges the readings' spacing on the server's word wherever it can", () => {
-    const base = network();
-    const uncalibrated = { ...base.detector, false_alarm_model: { ...base.detector.false_alarm_model, calibrated: false } };
-    // Calibrated: the spacing holds, whatever it rounded to.
-    expect(readingsGap({ ...base, detector: { ...base.detector, reading_period_s: 1.1 } })).toBeNull();
-    // Beside another reason, the figure decides, as the server would on it.
-    expect(readingsGap({ ...base, storm: true, detector: { ...uncalibrated, reading_period_s: 1.1 } })).toBeNull();
-    expect(readingsGap({ ...base, storm: true, detector: { ...uncalibrated, reading_period_s: 0.9 } })).toBeNull();
-    expect(readingsGap({ ...base, storm: true, detector: { ...uncalibrated, reading_period_s: 1.11 } })).toBe("readings 1.11 s apart, not 1 s");
-    expect(readingsGap({ ...base, storm: true, detector: { ...uncalibrated, reading_period_s: 0.5 } })).toBe("readings 0.5 s apart, not 1 s");
-    expect(readingsGap({ ...base, storm: true, detector: { ...uncalibrated, reading_period_s: null } })).toBe("the readings' spacing not yet measured");
-    // The only condition left: a spacing at the edge is what fails.
-    expect(readingsGap({ ...base, detector: { ...uncalibrated, reading_period_s: 1.1 } })).toBe("readings 1.1 s apart, not 1 s");
-    expect(readingsGap({ ...base, detector: { ...uncalibrated, reading_period_s: 0.9 } })).toBe("readings 0.9 s apart, not 1 s");
-    // Clear of the edge, the figure settles it, even then: never "1 s apart, not 1 s".
-    expect(readingsGap({ ...base, detector: { ...uncalibrated, reading_period_s: 1 } })).toBeNull();
-    expect(readingsGap({ ...base, detector: { ...uncalibrated, reading_period_s: 1.09 } })).toBeNull();
+  // The server judges the unrounded spacing, out beyond 10 % and back only
+  // within 5 %, so the rounded figure must not be judged again.
+  it("takes the server's word on the readings' spacing, and gives the figure as the reason", () => {
+    const detector = network().detector;
+    // 1.0999 s holds, and arrives as 1.1.
+    expect(readingsGap({ detector: { ...detector, reading_period_s: 1.1, reading_period_calibrated: true } })).toBeNull();
+    // Out once, it counts again only within 5 %: 1.07 s does not, yet.
+    expect(readingsGap({ detector: { ...detector, reading_period_s: 1.07, reading_period_calibrated: false } })).toBe(
+      "readings 1.07 s apart, not 1 s",
+    );
+    expect(readingsGap({ detector: { ...detector, reading_period_s: 1.6, reading_period_calibrated: false } })).toBe("readings 1.6 s apart, not 1 s");
+    expect(readingsGap({ detector: { ...detector, reading_period_s: 2, reading_period_calibrated: false } })).toBe("readings 2 s apart, not 1 s");
+    expect(readingsGap({ detector: { ...detector, reading_period_s: null, reading_period_calibrated: false } })).toBe(
+      "the readings' spacing not yet measured",
+    );
   });
 
   it("lists reasons as a sentence", () => {
     expect(joinReasons(["a storm running"])).toBe("a storm running");
     expect(joinReasons(["a", "b"])).toBe("a and b");
     expect(joinReasons(["a", "b", "c"])).toBe("a, b and c");
+  });
+});
+
+// Readings and events carry the fleet's clock, now_ms and updated_ms the
+// server's; a fleet minutes off the server's clock must be measured by its own.
+describe("fleetNow", () => {
+  it("is the latest reading, moved on by the time since the server took it in", () => {
+    expect(fleetNow(network())).toBe(NOW_MS - 1_000);
+    expect(fleetNow({ ...network(), now_ms: NOW_MS + 4_000 })).toBe(NOW_MS + 3_000);
+  });
+
+  it("keeps to the fleet's clock however far it is from the server's", () => {
+    expect(fleetNow(onFleetClock(network(), -120_000))).toBe(NOW_MS - 121_000);
+    expect(fleetNow(onFleetClock(network(), 120_000))).toBe(NOW_MS + 119_000);
+  });
+
+  it("counts a whole fleet gone quiet from the last push the server took in", () => {
+    const quiet = { ...network(), updated_ms: NOW_MS - 300_000 };
+    const silent = { ...quiet, nodes: quiet.nodes.map((n) => ({ ...n, state: "stale" as const, last_ms: NOW_MS - 301_000 })) };
+    expect(fleetNow(silent)).toBe(NOW_MS - 1_000);
+  });
+
+  it("falls back to the server's clock with nothing read yet", () => {
+    expect(fleetNow({ ...network(), nodes: [] })).toBe(NOW_MS);
+    expect(fleetNow(withNode({ ...network(), nodes: network().nodes.slice(0, 1) }, "mag-synth-001", { last_ms: 0 }))).toBe(NOW_MS);
+  });
+});
+
+// Shown only when the server has turned something away: a push refused whole
+// is readings lost.
+describe("fleetRefusals", () => {
+  it("says nothing while nothing was turned away", () => {
+    expect(fleetRefusals({ pushes_refused: 0, entries_rejected: 0 })).toBeNull();
+    expect(fleetRefusals({})).toBeNull();
+  });
+
+  it("says plainly what was refused and what was skipped", () => {
+    expect(fleetRefusals({ pushes_refused: 1, entries_rejected: 0 })).toBe(
+      "Since it started, the server has refused 1 push from the fleet (its readings are lost).",
+    );
+    expect(fleetRefusals({ pushes_refused: 0, entries_rejected: 12 })).toBe(
+      "Since it started, the server has skipped 12 entries it does not publish: a host that is not a synthetic radar node, an id not starting mag-, or a position off the globe.",
+    );
+    expect(fleetRefusals({ pushes_refused: 3_400, entries_rejected: 1 })).toBe(
+      `Since it started, the server has refused ${(3_400).toLocaleString()} pushes from the fleet (their readings are lost) and skipped 1 entry it does not publish: a host that is not a synthetic radar node, an id not starting mag-, or a position off the globe.`,
+    );
   });
 });
 

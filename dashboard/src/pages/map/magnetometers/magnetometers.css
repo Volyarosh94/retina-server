@@ -149,6 +149,15 @@
   margin: 4px 0 0;
 }
 
+/* What the server turned away from the fleet: shown only when it has turned
+   something away, in plain words and the secondary ink, as a fact to look
+   into rather than an alarm. */
+.mag-summary-fleet {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
 .mag-event-list {
   list-style: none;
   margin: 2px 0 0;

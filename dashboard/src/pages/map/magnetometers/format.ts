@@ -410,35 +410,21 @@ export function modelGaps(settings: Pick<MagSettings, "mag_storm" | "mag_common_
   return gaps;
 }
 
-/** The spacing of readings the model was fitted at, and how far off it may be (the server's 10 %). */
+/** The spacing of readings the model was fitted at. */
 const MODEL_PERIOD_S = 1;
-const PERIOD_TOLERANCE = 0.1;
-/** The server sends the spacing to two places: up to this far from what it judged. */
-const SENT_ROUNDING_S = 0.005;
 
 /**
  * Why the readings' spacing keeps the noise model from holding, in the same
- * words as the other reasons, or null if it does not: not measured yet, or
- * further than 10 % from a second.
- *
- * The server judges the spacing unrounded and sends it rounded, so a figure
- * at the edge (1.1 s, 0.9 s) may have been either side of it: 1.0999 s
- * arrives as 1.1, and holds. The server's word decides wherever it can:
- * calibrated, the spacing holds; not calibrated with the common mode
- * subtracted and no storm, a spacing at the edge is what fails, the one
- * condition left (sim_magnetometer.py, calibrated). A figure clear of the
- * edge settles itself.
+ * words as the other reasons, or null if it does not. Whether it holds is the
+ * server's word (reading_period_calibrated): it judges the unrounded spacing,
+ * with a margin so a spacing near the edge does not flicker, and the figure
+ * it sends, rounded, is only the explanation.
  */
-export function readingsGap(network: Pick<MagNetwork, "detector" | "storm">): string | null {
-  const { reading_period_s: period, common_mode_applied: subtracted, false_alarm_model: model } = network.detector;
-  if (model.calibrated) return null;
+export function readingsGap(network: Pick<MagNetwork, "detector">): string | null {
+  const { reading_period_s: period, reading_period_calibrated: holds } = network.detector;
+  if (holds) return null;
   if (period === null || period === undefined) return "the readings' spacing not yet measured";
-  const off = Math.abs(period - MODEL_PERIOD_S);
-  const tolerance = PERIOD_TOLERANCE * MODEL_PERIOD_S;
-  const edge = Math.abs(off - tolerance) <= SENT_ROUNDING_S + 1e-9;
-  const beyond = !edge && off > tolerance;
-  if (beyond || (edge && subtracted && !network.storm)) return `readings ${Number(period.toFixed(2))} s apart, not ${MODEL_PERIOD_S} s`;
-  return null;
+  return `readings ${Number(period.toFixed(2))} s apart, not ${MODEL_PERIOD_S} s`;
 }
 
 /**
@@ -458,6 +444,46 @@ export function runningModelGaps(network: MagNetwork): string[] {
   if (readings) gaps.push(readings);
   // The server's word that the model does not hold, for a reason it does not name.
   return gaps.length ? gaps : ["the settings now running"];
+}
+
+/**
+ * The fleet's clock now. Readings, events and `last_ms` carry the fleet's
+ * time, and `now_ms` the server's, which may be minutes apart: measured
+ * against the server's clock, a fleet running two minutes behind would put
+ * two minutes of silence after every reading. So: the latest reading any
+ * magnetometer sent, moved on by the time since the server took in the last
+ * push (both of those on the server's clock).
+ */
+export function fleetNow(network: Pick<MagNetwork, "nodes" | "now_ms" | "updated_ms">): number {
+  let latest = 0;
+  for (const node of network.nodes) latest = Math.max(latest, node.last_ms || 0);
+  if (!(latest > 0) || !(network.updated_ms > 0)) return network.now_ms;
+  return latest + Math.max(0, network.now_ms - network.updated_ms);
+}
+
+/** "1 push", "3 pushes" */
+function count(n: number, one: string, many: string): string {
+  return `${n.toLocaleString()} ${n === 1 ? one : many}`;
+}
+
+/**
+ * What the server has turned away from the fleet since it started, in plain
+ * words, or null while it has turned nothing away. A push refused whole is
+ * readings lost, since the fleet drops it; an entry skipped is a
+ * magnetometer the server will not publish.
+ */
+export function fleetRefusals(detector: Partial<Pick<MagNetwork["detector"], "pushes_refused" | "entries_rejected">>): string | null {
+  const refused = detector.pushes_refused ?? 0;
+  const skipped = detector.entries_rejected ?? 0;
+  if (refused <= 0 && skipped <= 0) return null;
+  const parts: string[] = [];
+  if (refused > 0) parts.push(`refused ${count(refused, "push", "pushes")} from the fleet (${refused === 1 ? "its" : "their"} readings are lost)`);
+  if (skipped > 0) {
+    parts.push(
+      `skipped ${count(skipped, "entry", "entries")} it does not publish: a host that is not a synthetic radar node, an id not starting mag-, or a position off the globe`,
+    );
+  }
+  return `Since it started, the server has ${parts.join(" and ")}.`;
 }
 
 /** "a, b and c" */
