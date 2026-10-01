@@ -1,9 +1,9 @@
-import { fireEvent, render } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { MapContainer } from "react-leaflet";
 import { describe, expect, it, vi } from "vitest";
 import MagnetometerLayer from "./MagnetometerLayer";
-import { magEvent, network, NOW_MS } from "../../../test/magnetometerNetwork";
-import type { MagNetwork } from "./types";
+import { magEvent, network, NOW_MS, withNode } from "../../../test/magnetometerNetwork";
+import type { MagNetwork, MagNode } from "./types";
 
 // A band is an SVG path Leaflet can only draw with a layout; the props the
 // layer hands it are what is asserted.
@@ -39,14 +39,62 @@ describe("MagnetometerLayer", () => {
     expect(container.querySelectorAll(".mag-badge.mag-alarm")).toHaveLength(1);
     expect(container.querySelectorAll(".mag-badge.mag-quiet.mag-selected")).toHaveLength(1);
     expect(container.querySelectorAll(".mag-badge.mag-warming_up")).toHaveLength(1);
-    expect(container.querySelector('[title="Magnetometer beside synth-002"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label^="Magnetometer beside synth-002"]')).not.toBeNull();
+    // Named once: its tooltip shows on hover and focus, and a title beside
+    // it only stacked a second, plainer tooltip on top.
+    expect(container.querySelector(".mag-marker[title]")).toBeNull();
   });
 
   it("opens a magnetometer on click", () => {
     const onSelect = vi.fn();
     const { container } = renderLayer(network(), { onSelect });
-    fireEvent.click(container.querySelector('[title="Magnetometer beside synth-002"]')!);
+    fireEvent.click(container.querySelector('[aria-label^="Magnetometer beside synth-002"]')!);
     expect(onSelect).toHaveBeenCalledWith("mag-synth-002");
+  });
+
+  it("names each badge with its state, for whoever cannot see the colour", () => {
+    renderLayer(network());
+    expect(screen.getByRole("button", { name: "Magnetometer beside synth-001: quiet" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Magnetometer beside synth-002: detecting" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Magnetometer beside synth-003: warming up" })).toBeInTheDocument();
+  });
+
+  it("renames a badge when its state changes", () => {
+    const { rerender } = renderLayer(network());
+    const badge = screen.getByRole("button", { name: "Magnetometer beside synth-001: quiet" });
+    rerender(
+      <MapContainer center={[34.85, -82.39]} zoom={10} style={{ width: 800, height: 600 }}>
+        <MagnetometerLayer network={withNode(network(), "mag-synth-001", { state: "elevated" })} sitePositions={new Map()} selectedId={null} onSelect={() => {}} />
+      </MapContainer>,
+    );
+    // The same element, so keyboard focus on it survives the change.
+    expect(screen.getByRole("button", { name: "Magnetometer beside synth-001: elevated" })).toBe(badge);
+  });
+
+  it("opens a magnetometer from the keyboard, and keeps Space from reaching the map's shortcuts", () => {
+    const onSelect = vi.fn();
+    const shortcuts = vi.fn();
+    window.addEventListener("keydown", shortcuts);
+    renderLayer(network(), { onSelect });
+    const badge = screen.getByRole("button", { name: /^Magnetometer beside synth-002/ });
+    // Focus opens the badge's tooltip, a render of its own.
+    act(() => badge.focus());
+    fireEvent.keyDown(badge, { key: "Enter" });
+    expect(onSelect).toHaveBeenLastCalledWith("mag-synth-002");
+    fireEvent.keyDown(badge, { key: " " });
+    expect(onSelect).toHaveBeenCalledTimes(2);
+    // A held Space is one press, not a toggle per repeat, and the repeats do
+    // not reach the map's pause either.
+    fireEvent.keyDown(badge, { key: " ", repeat: true });
+    fireEvent.keyDown(badge, { key: " ", repeat: true });
+    expect(onSelect).toHaveBeenCalledTimes(2);
+    // Space is the map's pause; on a badge it is the badge's.
+    expect(shortcuts).not.toHaveBeenCalledWith(expect.objectContaining({ key: " " }));
+    // Any other key goes on to the map: Escape closes the panel there.
+    fireEvent.keyDown(badge, { key: "Escape" });
+    expect(onSelect).toHaveBeenCalledTimes(2);
+    expect(shortcuts).toHaveBeenCalledWith(expect.objectContaining({ key: "Escape" }));
+    window.removeEventListener("keydown", shortcuts);
   });
 
   it("draws the range band of an open detection, fainter for a minute after it closes, then not at all", () => {
@@ -70,12 +118,47 @@ describe("MagnetometerLayer", () => {
     expect(gone.queryByTestId("band")).toBeNull();
   });
 
+  it("draws a state it does not know as a grey badge named by the server's word, rather than failing", () => {
+    const net = withNode(network(), "mag-synth-001", { state: "re_placing" as MagNode["state"] });
+    const { container } = renderLayer(net);
+    expect(screen.getByRole("button", { name: "Magnetometer beside synth-001: re placing" })).toBeInTheDocument();
+    expect(container.querySelector(".mag-badge.mag-unknown")).not.toBeNull();
+    expect(container.innerHTML).not.toContain("mag-re_placing");
+  });
+
+  // Quiet, but deaf to slow passes until enough unbroken readings are in.
+  it("says in its tooltip when a magnetometer does not yet search the slow passes", () => {
+    renderLayer(withNode(network(), "mag-synth-001", { longest_scale_s: 16 }));
+    act(() => screen.getByRole("button", { name: /^Magnetometer beside synth-001/ }).focus());
+    expect(document.body.textContent).toContain("searching passes up to 16 s");
+  });
+
+  it("says nothing of it once the search is complete", () => {
+    renderLayer(network());
+    act(() => screen.getByRole("button", { name: /^Magnetometer beside synth-001/ }).focus());
+    expect(document.body.textContent).toContain("Quiet · score 1.3σ");
+    expect(document.body.textContent).not.toContain("searching passes");
+  });
+
+  // The server closes an event only on new readings, so one whose
+  // magnetometer stopped reporting stays open there for as long as it is silent.
+  it("ends the band of a detection whose magnetometer went silent at its last reading", () => {
+    const net = network();
+    const silent = renderLayer(withNode(net, "mag-synth-002", { state: "stale", last_ms: NOW_MS - 15_000 }));
+    expect(silent.getByTestId("band")).toHaveAttribute("data-fill", "0.07");
+    expect(silent.container.querySelectorAll(".mag-badge.mag-stale")).toHaveLength(1);
+    silent.unmount();
+
+    const long = renderLayer(withNode(net, "mag-synth-002", { state: "stale", last_ms: NOW_MS - 120_000 }));
+    expect(long.queryByTestId("band")).toBeNull();
+  });
+
   it("sits each badge on its radar site where the map knows it, else where the server puts it", () => {
     const pixel = (el: Element | null) => {
       const style = (el as HTMLElement).style;
       return { x: parseFloat(style.left), y: parseFloat(style.top) };
     };
-    const title = (host: string) => `[title="Magnetometer beside ${host}"]`;
+    const title = (host: string) => `[aria-label^="Magnetometer beside ${host}"]`;
 
     // The server puts synth-002 north-east of synth-001...
     const own = renderLayer(network());

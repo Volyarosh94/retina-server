@@ -2060,7 +2060,9 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
     "Escape": () => {
       if (showShortcutHelp) { setShowShortcutHelp(false); return; }
       if (searchQuery) { setSearchQuery(""); return; }
+      // Whichever of the two holds the side panel.
       setSelectedHex(null);
+      setSelectedMagId(null);
     },
     " ": () => handleTogglePause(),
     f: () => setShowFilters((v) => !v),
@@ -2132,7 +2134,12 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
         truthAvailable={truthAvailable}
         magnetometersAvailable={magnetometersAvailable}
         showMagnetometers={showMagnetometers}
-        onToggleMagnetometers={() => setShowMagnetometers((v) => !v)}
+        onToggleMagnetometers={() => {
+          setShowMagnetometers((v) => !v);
+          // A panel for a layer that is off, or one that comes back with it
+          // unasked, would be about badges nobody can see.
+          setSelectedMagId(null);
+        }}
         showAnomaliesOnly={showAnomaliesOnly}
         showIlluminators={showIlluminators}
         colorByAlt={colorByAlt}
@@ -2653,7 +2660,12 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
             )}
           </MapContainer>
 
-          <ShortcutHelp visible={showShortcutHelp} truthAvailable={truthAvailable} onClose={() => setShowShortcutHelp(false)} />
+          <ShortcutHelp
+            visible={showShortcutHelp}
+            truthAvailable={truthAvailable}
+            magnetometersAvailable={magnetometersAvailable}
+            onClose={() => setShowShortcutHelp(false)}
+          />
 
           {paused && historyRef.current.length > 0 && (
             <PlaybackBar

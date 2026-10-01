@@ -7,9 +7,12 @@ import type { MagEvent, MagNetwork, MagNode } from "../pages/map/magnetometers/t
 
 export const NOW_MS = 1_790_726_400_000;
 
+/** The server run the fixture belongs to; event ids carry it. */
+const RUN_ID = "run-1";
+
 export function magEvent(patch: Partial<MagEvent> = {}): MagEvent {
   return {
-    event_id: "mag-synth-002-1",
+    event_id: `mag-evt-${RUN_ID}-00002`,
     node_id: "mag-synth-002",
     host_node_id: "synth-002",
     start_ms: NOW_MS - 20_000,
@@ -20,6 +23,7 @@ export function magEvent(patch: Partial<MagEvent> = {}): MagEvent {
     strength_nt: 812.4,
     confidence: 0.99999,
     noise_once_per_h: 3.2e9,
+    calibrated: true,
     tau_s: 8,
     range_km: [0.45, 1.2],
     truth: { label: "true", provisional: false, object_id: "uap-flyby-1", true_peak_nt: 830.2, slant_range_km: 0.62 },
@@ -28,7 +32,7 @@ export function magEvent(patch: Partial<MagEvent> = {}): MagEvent {
 }
 
 const FALSE_ALARM = magEvent({
-  event_id: "mag-synth-001-1",
+  event_id: `mag-evt-${RUN_ID}-00001`,
   node_id: "mag-synth-001",
   host_node_id: "synth-001",
   start_ms: NOW_MS - 900_000,
@@ -57,8 +61,8 @@ function magNode(patch: Partial<MagNode>): MagNode {
     residual_nt: 4.2,
     score_sigma: 1.3,
     score_tau_s: 16,
+    longest_scale_s: 64,
     sigma_nt: 15.2,
-    spark: { start_ms: NOW_MS - 600_000, step_ms: 5_000, score: [1.1, 0.9, 1.3] },
     event: null,
     ...patch,
   };
@@ -66,6 +70,7 @@ function magNode(patch: Partial<MagNode>): MagNode {
 
 export function network(patch: Partial<MagNetwork> = {}): MagNetwork {
   return {
+    run_id: RUN_ID,
     updated_ms: NOW_MS,
     now_ms: NOW_MS,
     settings: {
@@ -80,7 +85,13 @@ export function network(patch: Partial<MagNetwork> = {}): MagNetwork {
     sensor: { model: "RM3100", cycle_count: 200, noise_nt: 15, lsb_nt: 13.3 },
     uap_moment_am2: 1e9,
     storm: false,
-    detector: { scales_s: [2, 4, 8, 16, 32, 64], dof: 9, false_alarm_model: { coefficient: 480, power: 2 } },
+    detector: {
+      scales_s: [2, 4, 8, 16, 32, 64],
+      dof: 9,
+      reading_period_s: 1,
+      common_mode_applied: true,
+      false_alarm_model: { coefficient: 480, power: 2, calibrated: true },
+    },
     nodes: [
       magNode({ event: FALSE_ALARM }),
       magNode({
@@ -101,10 +112,12 @@ export function network(patch: Partial<MagNetwork> = {}): MagNetwork {
         lon: -82.5,
         state: "warming_up",
         samples: 40,
-        b_nt: null,
+        // Measured from its first reading; no residual until its static level.
+        b_nt: 48_571.3,
         residual_nt: null,
         score_sigma: 0,
         score_tau_s: null,
+        longest_scale_s: null,
         sigma_nt: null,
       }),
     ],
@@ -118,8 +131,14 @@ export function network(patch: Partial<MagNetwork> = {}): MagNetwork {
       false_alarms_per_node_hour_ci95: [0.0026, 0.0366],
       passes: 2,
       passes_detected: 2,
+      passes_open: 0,
       pass_min_nt: 20,
     },
     ...patch,
   };
+}
+
+/** The fixture with one magnetometer's fields changed. */
+export function withNode(base: MagNetwork, nodeId: string, patch: Partial<MagNode>): MagNetwork {
+  return { ...base, nodes: base.nodes.map((n) => (n.node_id === nodeId ? { ...n, ...patch } : n)) };
 }

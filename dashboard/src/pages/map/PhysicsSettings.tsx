@@ -185,6 +185,11 @@ export default function PhysicsSettings() {
   const seededRef     = useRef(false);
   const dirtyRef      = useRef(false);
   const sceneDirtyRef = useRef(false);
+  // The Magnetometers section keeps its own drafts, on the same config: its
+  // unapplied edits count below as the page's own do, and Reload discards
+  // them too (a new `magSection` starts its settings afresh).
+  const magDirtyRef   = useRef(false);
+  const [magSection, setMagSection] = useState(0);
   const [drift, setDrift] = useState(null);
 
   function onConfig(data) {
@@ -210,7 +215,7 @@ export default function PhysicsSettings() {
     // long-running backend restarted after a stale snapshot can move it
     // forwards — either way it is a change this page did not make.
     const reverted = stamp < prevStamp;
-    if (dirtyRef.current || sceneDirtyRef.current) {
+    if (dirtyRef.current || sceneDirtyRef.current || magDirtyRef.current) {
       // Unapplied edits belong to the operator — never overwrite them.
       // Say the baseline moved and let them apply or discard.
       setDrift({ kind: "stale", reverted });
@@ -232,11 +237,32 @@ export default function PhysicsSettings() {
   const reloadFromSimulator = useCallback(() => {
     dirtyRef.current = false;
     sceneDirtyRef.current = false;
+    magDirtyRef.current = false;
+    setMagSection((n) => n + 1);
     seededRef.current = false;
     lastStampRef.current = null;
     setDrift(null);
     fetchConfig();
   }, [fetchConfig]);
+
+  // The Magnetometers section's Apply has answered, and is settled the way
+  // handleApply settles the page's own: the stamp it produced adopted, the
+  // warning cleared, and the config fetched again, which drops a poll still
+  // on its way from before the write. `unapplied` is the section edited again
+  // while its request was out. A warning may have held the page's drafts
+  // back for the section's edits alone: those with no edits of their own
+  // take the config the write left running.
+  function onMagApplied(body, unapplied) {
+    const stamp = body?.config?._updated_at;
+    lastStampRef.current = typeof stamp === "number" ? stamp : null;
+    magDirtyRef.current = unapplied;
+    if (body?.config) {
+      if (!dirtyRef.current) setDraft(serverToDraft(body.config));
+      if (!sceneDirtyRef.current) setSceneDraft(serverToScene(body.config));
+    }
+    setDrift(null);
+    fetchConfig();
+  }
 
   // A failed read of any of the polls below is non-fatal: its section keeps
   // the last good answer, or stays empty until there is one.
@@ -799,11 +825,11 @@ export default function PhysicsSettings() {
       {/* ── Magnetometers (simulation only; absent without the fleet) ── */}
       <MagnetometerSettings
         config={config}
-        onApplied={(stamp) => {
-          // Our own write: adopt its stamp so the drift check above does not
-          // report it as the config moving underneath the page.
-          lastStampRef.current = stamp;
+        discard={magSection}
+        onDirtyChange={(dirty) => {
+          magDirtyRef.current = dirty;
         }}
+        onApplied={onMagApplied}
       />
 
       {/* ── Ground Truth Map ────────────────────────────────────────── */}

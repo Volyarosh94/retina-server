@@ -568,11 +568,6 @@
   flex-shrink: 0;
 }
 
-/* The magnetometer badge is a rounded square; its legend swatch matches. */
-.legend-dot.legend-square {
-  border-radius: 3px;
-}
-
 /* ── Stats panel ─────────────────────────────────────────────────────────
    A .card of label/value pairs on a two-column grid, the same shape dash
    gives a fact list. Collapsed it is just its header, so it never covers a

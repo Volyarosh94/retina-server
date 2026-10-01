@@ -2,7 +2,7 @@
  * Words and numbers for the magnetometer layer, kept pure so they can be
  * tested without a map.
  */
-import type { MagEvent, MagState, MagStats } from "./types";
+import type { MagDetail, MagEvent, MagNetwork, MagSettings, MagState, MagStats } from "./types";
 
 export const STATE_LABEL: Record<MagState, string> = {
   warming_up: "Warming up",
@@ -12,15 +12,51 @@ export const STATE_LABEL: Record<MagState, string> = {
   stale: "No data",
 };
 
-/** Which palette entry a state is drawn in: the map's own semantic colours. */
-export function stateColourKey(state: MagState): "NODE" | "WARN" | "ANOMALY" | "INK_SUBTLE" {
+/** Whether the server's state is one this layer knows how to draw. */
+export function isKnownState(state: string): state is MagState {
+  return Object.prototype.hasOwnProperty.call(STATE_LABEL, state);
+}
+
+/**
+ * The words for a state: its label, or for one this layer does not know yet,
+ * the server's own word for it ("re_placing" reads "Re placing"), so a new
+ * state on the server shows up as itself rather than taking the layer down.
+ */
+export function stateLabel(state: MagState): string {
+  if (isKnownState(state)) return STATE_LABEL[state];
+  const words = String(state).replace(/_/g, " ").trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : "Unknown";
+}
+
+/**
+ * The server subtracts the network's common mode only with this many
+ * magnetometers or more reporting (sim_magnetometer.py, COMMON_MODE_MIN_NODES):
+ * with fewer, a median of the others lets one site's UAP into the rest.
+ */
+export const COMMON_MODE_MIN_NODES = 6;
+
+/** Too few for that, in words, for every caption that says so. */
+export const TOO_FEW_FOR_COMMON_MODE = "fewer than six magnetometers";
+
+/**
+ * Which palette entry a state is drawn in: the map's quality scale, GOOD,
+ * WARN and ANOMALY, with grey for a magnetometer that has no verdict to give.
+ *
+ * Quiet used to wear the node colour, so the badge matched the radar dot
+ * beside it. On the dark map that yellow sits CIEDE2000 5.1 from WARN's amber,
+ * and quiet and elevated read as one colour. The quality scale keeps every
+ * pair of states at least 24.8 apart in light and 37.7 in dark, past the
+ * palette's own worst pair (20.1 and 20.0). The badge's shape tells the
+ * states apart as well (badge.ts), for anyone who cannot tell the colours.
+ */
+export function stateColourKey(state: MagState): "GOOD" | "WARN" | "ANOMALY" | "INK_SUBTLE" {
   switch (state) {
     case "alarm":
       return "ANOMALY";
     case "elevated":
       return "WARN";
     case "quiet":
-      return "NODE";
+      return "GOOD";
     default:
       return "INK_SUBTLE";
   }
@@ -49,27 +85,95 @@ export function formatConfidence(confidence: number): string {
   return `${(confidence * 100).toFixed(confidence >= 0.99 ? 2 : 1)} %`;
 }
 
+const SUPERSCRIPT = "⁰¹²³⁴⁵⁶⁷⁸⁹";
+
+/**
+ * A rate per node-hour, measured or predicted, to two significant figures:
+ * "0.013", "0.00028", and below a ten-thousandth in powers of ten
+ * ("5.0 × 10⁻⁵"), where a row of zeros stops being readable. The server
+ * sends three significant figures, so a tiny bound is never a flat 0.
+ */
+export function formatPerNodeHour(x: number): string {
+  if (x === 0) return "0";
+  if (x >= 1e-4) return String(Number(x.toPrecision(2)));
+  const [mantissa, exponent] = x.toExponential(1).split("e");
+  const power = String(Math.abs(Number(exponent)))
+    .split("")
+    .map((d) => SUPERSCRIPT[Number(d)])
+    .join("");
+  return `${mantissa} × 10⁻${power}`;
+}
+
+/**
+ * Node-hours, as many places as they need: a tenth of one is the search of a
+ * few minutes, so the first hour is in two significant figures ("0.044"),
+ * where one decimal wrote "0.0"; from there on to a tenth, and from a hundred
+ * whole and grouped as the map writes a count ("61,235").
+ */
+export function formatNodeHours(hours: number): string {
+  if (!(hours > 0)) return "0";
+  if (hours < 1) return String(Number(hours.toPrecision(2)));
+  if (hours < 99.95) return hours.toFixed(1);
+  return Math.round(hours).toLocaleString();
+}
+
+/** "3 in 240 node-hours searched": the exposure, the hours the search actually ran. */
+function exposure(stats: MagStats): string {
+  return `${stats.false_alarms.toLocaleString()} in ${formatNodeHours(stats.node_hours)} node-hours searched`;
+}
+
 /** The scorecard's false-alarm rate, with its interval, in words a person can check. */
 export function formatFalseAlarmRate(stats: MagStats | null | undefined): string {
   if (!stats || stats.false_alarms_per_node_hour === null) return "measuring…";
-  const rate = stats.false_alarms_per_node_hour;
   const ci = stats.false_alarms_per_node_hour_ci95;
-  const interval = ci ? ` (95 %: ${ci[0].toFixed(3)}–${ci[1].toFixed(3)})` : "";
-  return `${rate.toFixed(3)} per node-hour${interval}, ${stats.false_alarms} in ${stats.node_hours.toFixed(1)} node-hours`;
+  const interval = ci ? ` (95 %: ${formatPerNodeHour(ci[0])}–${formatPerNodeHour(ci[1])})` : "";
+  return `${formatPerNodeHour(stats.false_alarms_per_node_hour)} per node-hour${interval}, ${exposure(stats)}`;
 }
 
-/** "3 in 240.0 node-hours": the false alarms the scorecard has counted. */
+/** "3 in 240 node-hours searched": the false alarms the scorecard has counted. */
 export function formatFalseAlarmCount(stats: MagStats): string {
   if (stats.false_alarms_per_node_hour === null) return "measuring…";
-  return `${stats.false_alarms} in ${stats.node_hours.toFixed(1)} node-hours`;
+  return exposure(stats);
 }
 
-/** "0.013 per node-hour, 95 %: 0.003–0.037": the rate behind that count. */
+/** "0.013 per node-hour, 95 %: 0.0026–0.037": the rate behind that count. */
 export function formatFalseAlarmInterval(stats: MagStats): string | null {
   const rate = stats.false_alarms_per_node_hour;
   if (rate === null) return null;
   const ci = stats.false_alarms_per_node_hour_ci95;
-  return `${rate.toFixed(3)} per node-hour${ci ? `, 95 %: ${ci[0].toFixed(3)}–${ci[1].toFixed(3)}` : ""}`;
+  return `${formatPerNodeHour(rate)} per node-hour${ci ? `, 95 %: ${formatPerNodeHour(ci[0])}–${formatPerNodeHour(ci[1])}` : ""}`;
+}
+
+/** A time in seconds as the server sends it (two places): "8 s", "16.4 s". */
+export function formatSeconds(seconds: number): string {
+  return Math.abs(seconds - Math.round(seconds)) < 0.05 ? `${Math.round(seconds)} s` : `${seconds.toFixed(1)} s`;
+}
+
+/** The detector's six time scales, in readings: a scale of τ needs 8τ + 1 of them unbroken. */
+const SCALES_READINGS = [2, 4, 8, 16, 32, 64];
+const readingsFor = (tau: number) => 8 * tau + 1;
+
+/**
+ * Which time scales a magnetometer searches, from the longest the server
+ * says it covers: all six once enough unbroken readings are in, and until
+ * then how long the rest will take at most. Null while it is warming up and
+ * searches none. Seconds, at the network's own spacing of readings.
+ */
+export function searchedScales(
+  longestS: number | null,
+  periodS: number | null,
+): { text: string; complete: boolean } | null {
+  if (longestS === null) return null;
+  const period = periodS ?? 1;
+  const longest = SCALES_READINGS.reduce((best, tau) =>
+    Math.abs(tau * period - longestS) < Math.abs(best * period - longestS) ? tau : best,
+  );
+  const shortest = formatSeconds(SCALES_READINGS[0] * period).replace(" s", "");
+  const full = SCALES_READINGS[SCALES_READINGS.length - 1];
+  const range = longest === SCALES_READINGS[0] ? `${shortest} s` : `${shortest}–${formatSeconds(longestS)}`;
+  if (longest === full) return { text: range, complete: true };
+  const minutes = Math.ceil(((readingsFor(full) - readingsFor(longest)) * period) / 60);
+  return { text: `${range}; up to ${formatSeconds(full * period)} within ${minutes} min`, complete: false };
 }
 
 /**
@@ -83,12 +187,145 @@ export function scoreAxis(thresholdSigma: number, peakSigma: number): { max: num
   return { max, ticks };
 }
 
+/** The least of 1, 1.5, 2, 2.5, 3, 4, 5, 6 and 8 times a power of ten that is at least `least`. */
+function roundStep(least: number): number {
+  const power = 10 ** Math.floor(Math.log10(least));
+  return [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map((m) => m * power).find((step) => step >= least * (1 - 1e-9)) ?? 10 * power;
+}
+
+/**
+ * The residual chart's vertical axis: even about zero, so a pass reads the
+ * same way up on all three axes, out to the largest excursion on a round
+ * step, two steps either side. Left to its own ticks the chart chose them
+ * for the space and then dropped some ("−60, −30, 0, 60").
+ */
+export function residualAxis(values: readonly number[], leastNt = 10): { max: number; ticks: number[] } {
+  let peak = leastNt;
+  for (const v of values) if (Number.isFinite(v)) peak = Math.max(peak, Math.abs(v));
+  const step = roundStep(peak / 2);
+  const max = step * Math.ceil(peak / step - 1e-9);
+  const n = Math.round(max / step);
+  const ticks = Array.from({ length: 2 * n + 1 }, (_, i) => Number(((i - n) * step).toPrecision(12)));
+  return { max: Number(max.toPrecision(12)), ticks };
+}
+
+/**
+ * The measured-field chart's vertical axis: the readings with a tenth of
+ * their spread either side, never narrower than `minSpanNt`, on ticks a round
+ * step apart. A quiet sensor's few nT of noise on 48,600 nT would otherwise
+ * fill the chart and look like a signal, and a fixed window left to the
+ * chart's own ticks gets unevenly spaced ones.
+ */
+export function fieldAxis(
+  values: readonly number[],
+  minSpanNt = 40,
+): { min: number; max: number; ticks: number[] } | null {
+  if (!values.length) return null;
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const v of values) {
+    lo = Math.min(lo, v);
+    hi = Math.max(hi, v);
+  }
+  const span = Math.max(hi - lo, minSpanNt) * 1.2;
+  const step = [5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000].find((s) => s >= span / 4) ?? 10_000;
+  const mid = (lo + hi) / 2;
+  const min = Math.floor((mid - span / 2) / step) * step;
+  const max = Math.ceil((mid + span / 2) / step) * step;
+  const ticks = Array.from({ length: Math.round((max - min) / step) + 1 }, (_, i) => min + i * step);
+  return { min, max, ticks };
+}
+
+/** One reading as the panel charts it: the detail's series, row by row. */
+export interface ChartRow {
+  t: number;
+  x: number | null;
+  y: number | null;
+  z: number | null;
+  residual: number | null;
+  score: number | null;
+  bx: number | null;
+  by: number | null;
+  bz: number | null;
+  b: number | null;
+}
+
+/**
+ * Readings further apart than this have a hole between them: the server's
+ * HOLE_S, across which no detector window reaches.
+ */
+const HOLE_MS = 5_000;
+
+/** A value of a series, or null where the series has none (or is not sent at all). */
+function at(values: readonly (number | null)[] | undefined, i: number): number | null {
+  const v = values?.[i];
+  return typeof v === "number" ? v : null;
+}
+
+/**
+ * The detail's series as rows for the charts, with a row of nothing wherever
+ * the readings stopped for longer than a hole, so every line breaks there
+ * rather than drawing straight across it. Nulls stay null: no residual before
+ * the static level, no score while the detector cannot score, and no measured
+ * field from a server that does not send one.
+ */
+export function chartRows(series: MagDetail["series"] | undefined): ChartRow[] {
+  if (!series || !Array.isArray(series.t)) return [];
+  const rows: ChartRow[] = [];
+  series.t.forEach((t, i) => {
+    const prev = series.t[i - 1];
+    if (prev !== undefined && t - prev > HOLE_MS) {
+      rows.push({ t: (prev + t) / 2, x: null, y: null, z: null, residual: null, score: null, bx: null, by: null, bz: null, b: null });
+    }
+    rows.push({
+      t,
+      x: at(series.x, i),
+      y: at(series.y, i),
+      z: at(series.z, i),
+      residual: at(series.residual, i),
+      score: at(series.score, i),
+      bx: at(series.bx, i),
+      by: at(series.by, i),
+      bz: at(series.bz, i),
+      b: at(series.b, i),
+    });
+  });
+  return rows;
+}
+
+/** The charts' time window: the ten minutes the panel asks for, up to the last reading. */
+export const CHART_WINDOW_MS = 600_000;
+
+/**
+ * Ticks for a time axis, on whole local minutes a round step apart. The
+ * charts label a tick HH:MM, and one that fell between minutes was labelled
+ * with its minute truncated, so evenly spaced ticks read unevenly.
+ */
+export function minuteTicks(startMs: number, endMs: number, maxTicks = 5): number[] {
+  if (!(endMs > startMs)) return [];
+  const spanMin = (endMs - startMs) / 60_000;
+  const step = [1, 2, 5, 10, 15, 30].find((s) => spanMin / s <= maxTicks) ?? 60;
+  const first = new Date(startMs);
+  first.setSeconds(0, 0);
+  const minute = first.getMinutes();
+  first.setMinutes(minute + ((step - (minute % step)) % step));
+  if (first.getTime() < startMs) first.setMinutes(first.getMinutes() + step);
+  const ticks: number[] = [];
+  for (let t = first.getTime(); t <= endMs; t += step * 60_000) ticks.push(t);
+  return ticks;
+}
+
 /** The server clips a score at 40σ, beyond which it means nothing more. */
 export const SCORE_CLIP_SIGMA = 40;
 
-/** "7.2σ", or "≥ 40σ" at the server's clip. */
+/**
+ * "7.2σ", or "≥ 40σ" at the server's clip. Never below zero: a detection
+ * score says how far the data is from noise, and the server publishes none
+ * below it, so a rounding -0.0 is not shown either.
+ */
 export function formatScore(scoreSigma: number): string {
-  return scoreSigma >= SCORE_CLIP_SIGMA ? `≥ ${SCORE_CLIP_SIGMA}σ` : `${scoreSigma.toFixed(1)}σ`;
+  if (scoreSigma >= SCORE_CLIP_SIGMA) return `≥ ${SCORE_CLIP_SIGMA}σ`;
+  return `${Math.max(0, scoreSigma).toFixed(1)}σ`;
 }
 
 /** "1e9 A·m²" */
@@ -104,17 +341,129 @@ export function truthText(event: MagEvent): string {
   return `${truth.object_id ?? "UAP"}${where}, true peak ${Math.round(truth.true_peak_nt)} nT`;
 }
 
-/** One word for where an event stands: still open, or what the truth made of it. */
-export function eventVerdict(event: MagEvent): string {
-  if (event.active) return "detecting";
+/**
+ * Whether an event is being followed right now: open, on a magnetometer that
+ * is still reporting. The server closes an event only when new readings show
+ * the pass is over, so one whose magnetometer fell silent (or was taken away,
+ * `state` undefined) stays open there without anything watching it.
+ */
+export function isLive(event: MagEvent | null, state: MagState | undefined): boolean {
+  return Boolean(event?.active) && state !== undefined && state !== "stale";
+}
+
+/**
+ * One word for where an event stands: detecting while it is live, "no data"
+ * while it is open on a silent magnetometer, and once closed what the truth
+ * made of it.
+ */
+export function eventVerdict(event: MagEvent, live = event.active): string {
+  if (live) return "detecting";
+  if (event.active) return "no data";
   if (!event.truth) return "closed";
   return event.truth.label === "true" ? "UAP" : "false alarm";
 }
 
-/** An event is worth drawing on the map while it is open and for a minute after. */
-export function isRecent(event: MagEvent | null, nowMs: number, lingerMs = 60_000): boolean {
+/**
+ * An event is worth drawing on the map while it is open and for a minute
+ * after. One left open on a magnetometer that went silent at `silentSinceMs`
+ * is taken to have ended then.
+ */
+export function isRecent(
+  event: MagEvent | null,
+  nowMs: number,
+  lingerMs = 60_000,
+  silentSinceMs: number | null = null,
+): boolean {
   if (!event) return false;
-  return event.active || (event.end_ms !== null && nowMs - event.end_ms <= lingerMs);
+  if (event.active && silentSinceMs === null) return true;
+  const end = event.end_ms ?? silentSinceMs;
+  return end !== null && nowMs - end <= lingerMs;
+}
+
+/**
+ * Whether the network's common mode is being left in, and why: switched off;
+ * enough magnetometers placed and reporting but too few yet with the static
+ * level the server counts (each sets one in its first two minutes, so this
+ * is every start and re-placement); or too few reporting at all. Null while
+ * it is being removed. The server says whether; the setting alone does not.
+ */
+export function commonModeLeftIn(network: MagNetwork): "off" | "warming" | "too-few" | null {
+  if (network.detector.common_mode_applied) return null;
+  if (!network.settings.mag_common_mode) return "off";
+  const reporting = network.nodes.filter((n) => n.state !== "stale");
+  const levelled = reporting.filter((n) => n.residual_nt !== null);
+  return reporting.length >= COMMON_MODE_MIN_NODES && levelled.length < COMMON_MODE_MIN_NODES ? "warming" : "too-few";
+}
+
+/**
+ * Where settings put the detector outside its false-alarm model, every
+ * reason, as words that follow "not calibrated with"; none where it holds.
+ * The model was fitted to sensor noise and daily variation with the common
+ * mode removed (which the server does only with COMMON_MODE_MIN_NODES or
+ * more) and a reading a second, which no setting changes.
+ */
+export function modelGaps(settings: Pick<MagSettings, "mag_storm" | "mag_common_mode" | "mag_n_nodes">): string[] {
+  const gaps: string[] = [];
+  if (settings.mag_storm) gaps.push("a storm");
+  if (!settings.mag_common_mode) gaps.push("the common mode left in");
+  else if (settings.mag_n_nodes < COMMON_MODE_MIN_NODES) gaps.push(TOO_FEW_FOR_COMMON_MODE);
+  return gaps;
+}
+
+/** The spacing of readings the model was fitted at, and how far off it may be (the server's 10 %). */
+const MODEL_PERIOD_S = 1;
+const PERIOD_TOLERANCE = 0.1;
+/** The server sends the spacing to two places: up to this far from what it judged. */
+const SENT_ROUNDING_S = 0.005;
+
+/**
+ * Why the readings' spacing keeps the noise model from holding, in the same
+ * words as the other reasons, or null if it does not: not measured yet, or
+ * further than 10 % from a second.
+ *
+ * The server judges the spacing unrounded and sends it rounded, so a figure
+ * at the edge (1.1 s, 0.9 s) may have been either side of it: 1.0999 s
+ * arrives as 1.1, and holds. The server's word decides wherever it can:
+ * calibrated, the spacing holds; not calibrated with the common mode
+ * subtracted and no storm, a spacing at the edge is what fails, the one
+ * condition left (sim_magnetometer.py, calibrated). A figure clear of the
+ * edge settles itself.
+ */
+export function readingsGap(network: Pick<MagNetwork, "detector" | "storm">): string | null {
+  const { reading_period_s: period, common_mode_applied: subtracted, false_alarm_model: model } = network.detector;
+  if (model.calibrated) return null;
+  if (period === null || period === undefined) return "the readings' spacing not yet measured";
+  const off = Math.abs(period - MODEL_PERIOD_S);
+  const tolerance = PERIOD_TOLERANCE * MODEL_PERIOD_S;
+  const edge = Math.abs(off - tolerance) <= SENT_ROUNDING_S + 1e-9;
+  const beyond = !edge && off > tolerance;
+  if (beyond || (edge && subtracted && !network.storm)) return `readings ${Number(period.toFixed(2))} s apart, not ${MODEL_PERIOD_S} s`;
+  return null;
+}
+
+/**
+ * Every reason the network as it runs is outside the model, on the server's
+ * word that it is: a storm, the common mode not subtracted (and why), the
+ * readings' spacing. None while the model holds.
+ */
+export function runningModelGaps(network: MagNetwork): string[] {
+  if (network.detector.false_alarm_model.calibrated) return [];
+  const gaps: string[] = [];
+  if (network.storm) gaps.push("a storm running");
+  const leftIn = commonModeLeftIn(network);
+  if (leftIn === "off") gaps.push("the common mode left in");
+  else if (leftIn === "warming") gaps.push("the magnetometers still warming up");
+  else if (leftIn === "too-few") gaps.push(`${TOO_FEW_FOR_COMMON_MODE} reporting`);
+  const readings = readingsGap(network);
+  if (readings) gaps.push(readings);
+  // The server's word that the model does not hold, for a reason it does not name.
+  return gaps.length ? gaps : ["the settings now running"];
+}
+
+/** "a, b and c" */
+export function joinReasons(reasons: string[]): string {
+  if (reasons.length <= 1) return reasons.join("");
+  return `${reasons.slice(0, -1).join(", ")} and ${reasons[reasons.length - 1]}`;
 }
 
 /** "#dc2626" with an alpha, as rgba(): the badge's pulse fades the state colour. */
@@ -147,7 +496,8 @@ export function normalTail(z: number): number {
 /**
  * False alarms per node-hour the server's model predicts at a threshold:
  * coefficient · z^power · P(Z > z), fitted to the detector's benchmark
- * (backend/services/sim_magnetometer.py, FALSE_ALARM_COEFFICIENT).
+ * (backend/services/sim_magnetometer.py, FALSE_ALARM_COEFFICIENT). It holds
+ * only where the fit did: see modelGaps and runningModelGaps.
  */
 export function predictedFalseAlarmsPerHour(
   thresholdSigma: number,

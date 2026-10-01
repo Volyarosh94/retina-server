@@ -2,6 +2,7 @@ import { altitudeLegend } from "./icons";
 import { truthLegend } from "./truthColor";
 import { usePalette } from "./useMapTheme";
 import { useMapPreference } from "./useMapPreference";
+import MagnetometerLegend from "./magnetometers/MagnetometerLegend";
 
 const NO_TRUTH_CLASSES: ReadonlySet<string> = new Set();
 
@@ -15,7 +16,7 @@ const NO_TRUTH_CLASSES: ReadonlySet<string> = new Set();
  */
 export default function MapLegend({ colorByAlt, showGroundTruth, truthClasses = NO_TRUTH_CLASSES, showIlluminators, hasPlayback, showMagnetometers = false }) {
   const palette = usePalette();
-  const { ILLUMINATOR, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED, NODE, WARN, ANOMALY } = palette;
+  const { ILLUMINATOR, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED, NODE } = palette;
   const [open, setOpen] = useMapPreference("legendOpen", true);
 
   return (
@@ -53,24 +54,19 @@ export default function MapLegend({ colorByAlt, showGroundTruth, truthClasses = 
           )}
           <LegendItem color={NODE} label="Node" />
           {showIlluminators && <LegendItem color={ILLUMINATOR} label="Illuminator" />}
-          {showMagnetometers && (
-            <>
-              {/* Square, like the badge, so a magnetometer is never read as a node dot. */}
-              <LegendItem color={NODE} label="Magnetometer" square />
-              <LegendItem color={WARN} label="Magnetometer, elevated" square />
-              <LegendItem color={ANOMALY} label="Magnetometer, detecting" square />
-            </>
-          )}
+          {/* The badges themselves, shape and all, so a magnetometer is never
+              read as a node dot and each state is keyed by more than a hue. */}
+          {showMagnetometers && <MagnetometerLegend />}
         </div>
       )}
     </div>
   );
 }
 
-function LegendItem({ color, label, square = false }) {
+function LegendItem({ color, label }) {
   return (
     <span className="legend-item">
-      <span className={square ? "legend-dot legend-square" : "legend-dot"} style={{ background: color }} /> {label}
+      <span className="legend-dot" style={{ background: color }} /> {label}
     </span>
   );
 }

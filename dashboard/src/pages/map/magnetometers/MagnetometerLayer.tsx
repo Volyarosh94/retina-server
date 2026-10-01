@@ -1,10 +1,22 @@
-import { memo, useMemo } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import L from "leaflet";
 import { Marker, Polygon, Tooltip } from "react-leaflet";
 import { usePalette } from "../useMapTheme";
 import { annulus } from "./geometry";
-import { formatRange, formatScore, isRecent, STATE_LABEL, stateColourKey, withAlpha } from "./format";
-import type { MagNetwork, MagNode } from "./types";
+import { badgeSvg, type BadgeInk } from "./badge";
+import {
+  formatRange,
+  formatScore,
+  formatSeconds,
+  isKnownState,
+  isLive,
+  isRecent,
+  searchedScales,
+  stateColourKey,
+  stateLabel,
+  withAlpha,
+} from "./format";
+import type { MagNetwork, MagNode, MagState } from "./types";
 import "./magnetometers.css";
 
 /**
@@ -12,37 +24,34 @@ import "./magnetometers.css";
  *
  * Each is a small badge beside the radar node it shares a roof with, at the
  * position the server publishes for that node, so the two read as one site.
- * The badge takes the map's own semantic colours: the node colour when quiet,
- * WARN when its detection score is within 1.5σ of the threshold, ANOMALY while
- * it is detecting, grey while warming up or silent. A detection also draws the
- * range band the event's strength implies for the configured dipole moment:
- * the UAP is somewhere in that ring.
+ * The badge is drawn on the map's quality scale, with a shape for each state
+ * as well (badge.ts): a GOOD square when quiet, a WARN diamond when its
+ * detection score is within 1.5σ of the threshold, an ANOMALY square that
+ * pulses while it is detecting, grey while warming up and hollow grey when it
+ * has gone silent. A detection also draws the range band the event's strength
+ * implies for the configured dipole moment: the UAP is somewhere in that ring.
  *
  * DivIcons in the marker pane rather than canvas paths: panes.ts explains why
  * a second interactive canvas would swallow the map's clicks. The class is
  * `mag-marker`, never `node-marker`, which the E2E suite counts.
  */
-function badgeHtml(colour: string, halo: string, state: string, selected: boolean): string {
-  const ring = selected ? `<circle cx="9" cy="9" r="8.2" fill="none" stroke="${colour}" stroke-width="1.6"/>` : "";
+function badgeHtml(ink: BadgeInk, state: MagState, selected: boolean): string {
+  const colour = ink[stateColourKey(state)];
   const pulse = `--mag-pulse:${withAlpha(colour, 0.7)};--mag-pulse-end:${withAlpha(colour, 0)};--mag-halo:${withAlpha(colour, 0.45)}`;
-  return `<div class="mag-badge mag-${state}${selected ? " mag-selected" : ""}" style="${pulse}">
-  <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-    ${ring}
-    <rect x="3" y="3" width="12" height="12" rx="3" fill="${colour}" fill-opacity="0.92" stroke="${halo}" stroke-width="1.2"/>
-    <path d="M6.2 5.8 v4.1 a2.8 2.8 0 0 0 5.6 0 v-4.1" fill="none" stroke="${halo}" stroke-width="1.5" stroke-linecap="round"/>
-  </svg>
-</div>`;
+  // Markup built as a string: only a state this layer knows goes into it.
+  const kind = isKnownState(state) ? state : "unknown";
+  return `<div class="mag-badge mag-${kind}${selected ? " mag-selected" : ""}" style="${pulse}">${badgeSvg(state, ink, { selected })}</div>`;
 }
 
 const iconCache = new Map<string, L.DivIcon>();
 
-function badgeIcon(colour: string, halo: string, state: string, selected: boolean): L.DivIcon {
-  const key = `${colour}|${halo}|${state}|${selected}`;
+function badgeIcon(ink: BadgeInk, state: MagState, selected: boolean): L.DivIcon {
+  const key = `${ink[stateColourKey(state)]}|${ink.INK_MUTED}|${ink.ICON_HALO}|${state}|${selected}`;
   let icon = iconCache.get(key);
   if (!icon) {
     icon = L.divIcon({
       className: "mag-marker",
-      html: badgeHtml(colour, halo, state, selected),
+      html: badgeHtml(ink, state, selected),
       iconSize: [18, 18],
       // Up and to the right of the radar node's own dot at the same point.
       iconAnchor: [-3, 21],
@@ -51,6 +60,9 @@ function badgeIcon(colour: string, halo: string, state: string, selected: boolea
   }
   return icon;
 }
+
+/** A closed detection's band stays on the map this long, fainter. */
+const BAND_LINGER_MS = 60_000;
 
 interface Props {
   network: MagNetwork;
@@ -76,7 +88,11 @@ function MagnetometerLayer({ network, sitePositions, selectedId, onSelect }: Pro
     <>
       {placed.map(({ node, position }) => {
         const event = node.event;
-        if (!isRecent(event, nowMs) || !event?.range_km) return null;
+        // An event left open on a magnetometer that went silent ended, as far
+        // as anyone can tell, at its last reading.
+        const silentSince = node.state === "stale" ? node.last_ms : null;
+        if (!isRecent(event, nowMs, BAND_LINGER_MS, silentSince) || !event?.range_km) return null;
+        const live = isLive(event, node.state);
         const [inner, outer] = event.range_km;
         return (
           <Polygon
@@ -89,8 +105,8 @@ function MagnetometerLayer({ network, sitePositions, selectedId, onSelect }: Pro
               weight: 1.2,
               dashArray: "4 4",
               fillColor: palette.ANOMALY,
-              fillOpacity: event.active ? 0.16 : 0.07,
-              opacity: event.active ? 0.9 : 0.45,
+              fillOpacity: live ? 0.16 : 0.07,
+              opacity: live ? 0.9 : 0.45,
             }}
           />
         );
@@ -100,9 +116,8 @@ function MagnetometerLayer({ network, sitePositions, selectedId, onSelect }: Pro
           key={node.node_id}
           node={node}
           position={position}
-          colour={palette[stateColourKey(node.state)]}
-          halo={palette.ICON_HALO}
-          selected={node.node_id === selectedId}
+          icon={badgeIcon(palette, node.state, node.node_id === selectedId)}
+          periodS={network.detector.reading_period_s}
           onSelect={onSelect}
         />
       ))}
@@ -113,36 +128,71 @@ function MagnetometerLayer({ network, sitePositions, selectedId, onSelect }: Pro
 const MagMarker = memo(function MagMarker({
   node,
   position,
-  colour,
-  halo,
-  selected,
+  icon,
+  periodS,
   onSelect,
 }: {
   node: MagNode;
   position: [number, number];
-  colour: string;
-  halo: string;
-  selected: boolean;
+  icon: L.DivIcon;
+  /** The network's spacing of readings, in seconds, which sets the time scales' lengths. */
+  periodS: number | null;
   onSelect: (nodeId: string) => void;
 }) {
+  const marker = useRef<L.Marker>(null);
   const event = node.event;
+  const nodeId = node.node_id;
+  const scoring = node.state === "quiet" || node.state === "elevated" || node.state === "alarm";
+  const search = searchedScales(node.longest_scale_s, periodS);
+  // The badge's name carries its state, which its colour and shape show
+  // everyone else. Set on the element, which Leaflet keeps (and the keyboard
+  // focus on it) through every change of icon. No `title` as well: the
+  // tooltip shows on hover and focus, and a title only stacked a second,
+  // plainer one on top of it.
+  const label = `Magnetometer beside ${node.host_node_id}: ${stateLabel(node.state).toLowerCase()}`;
+  useEffect(() => {
+    marker.current?.getElement()?.setAttribute("aria-label", label);
+  }, [label, icon]);
+  const handlers = useMemo(
+    () => ({
+      click: () => onSelect(nodeId),
+      // Leaflet makes the badge a focusable button but answers Enter only by
+      // opening a bound popup, and these have none. Space is stopped here as
+      // well as handled: on the map at large it pauses the feed. A held key
+      // is one press, not a toggle per repeat.
+      keydown: (e: L.LeafletKeyboardEvent) => {
+        const key = e.originalEvent.key;
+        if (key !== "Enter" && key !== " ") return;
+        L.DomEvent.stop(e.originalEvent);
+        if (!e.originalEvent.repeat) onSelect(nodeId);
+      },
+    }),
+    [nodeId, onSelect],
+  );
   return (
     <Marker
+      ref={marker}
       position={position}
-      icon={badgeIcon(colour, halo, node.state, selected)}
+      icon={icon}
       zIndexOffset={1200}
       bubblingMouseEvents={false}
-      eventHandlers={{ click: () => onSelect(node.node_id) }}
+      eventHandlers={handlers}
       keyboard
-      title={`Magnetometer beside ${node.host_node_id}`}
     >
       <Tooltip direction="top" offset={[9, -20]} opacity={0.95}>
         <div className="mag-tooltip">
           <strong>Magnetometer</strong> · {node.host_node_id}
           <br />
-          {STATE_LABEL[node.state]}
-          {node.state !== "warming_up" && node.state !== "stale" ? ` · score ${formatScore(node.score_sigma)}` : ""}
-          {event?.active ? (
+          {stateLabel(node.state)}
+          {scoring ? ` · score ${formatScore(node.score_sigma)}` : ""}
+          {/* Quiet, but not yet listening for slow passes: worth knowing before reading it as clear. */}
+          {scoring && search && !search.complete && node.longest_scale_s !== null ? (
+            <>
+              <br />
+              searching passes up to {formatSeconds(node.longest_scale_s)}
+            </>
+          ) : null}
+          {isLive(event, node.state) && event ? (
             <>
               <br />
               UAP {Math.round(event.strength_nt)} nT, {formatRange(event.range_km)}
