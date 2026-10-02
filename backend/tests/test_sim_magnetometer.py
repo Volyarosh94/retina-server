@@ -272,13 +272,18 @@ class TestScores:
 
     @pytest.mark.parametrize(
         ("threshold", "low", "high"),
-        # The benchmark's measured 95 % intervals, per node-hour (design note).
+        # The benchmark's measured 95 % intervals, per node-hour, rounded
+        # outwards (scripts/magnetometer_false_alarms.py at its defaults:
+        # eight magnetometers, 3,065 node-hours at each threshold and 9,194
+        # at 5 and 5.5σ).
         [
-            (3.5, 1.3189, 1.4192),
-            (4.0, 0.2195, 0.2618),
-            (4.5, 0.0280, 0.0446),
-            (5.0, 0.0008, 0.0055),
-            (5.5, 0.0, 0.0017),
+            (3.0, 5.611, 5.782),
+            (3.5, 1.317, 1.401),
+            (4.0, 0.2168, 0.2515),
+            (4.5, 0.02861, 0.04220),
+            (5.0, 0.001759, 0.004015),
+            (5.5, 0.0000027, 0.0006061),
+            (6.0, 0.0, 0.001204),
         ],
     )
     def test_false_alarm_model_lies_inside_the_measured_intervals(self, threshold, low, high):
@@ -298,9 +303,37 @@ class TestScores:
         assert sm.garwood(k, 4.0) == pytest.approx((low / 4, high / 4), abs=1e-4)
 
     def test_range_band_brackets_both_geometries(self):
-        near, far = sm.range_band_km(100.0, 1e9)  # 1 km on the equator, 1.26 km on the axis
-        assert near < 1.0 and far > 1.26
-        assert sm.range_band_km(0.0, 1e9) is None
+        # 100 nT is what a 1e9 A·m² dipole gives 1 km off on its equator, or
+        # 1.26 km off on its axis. A strong detection's strength reads close
+        # to the truth (0.77–1.11 of it for nine in ten above 15σ), so its
+        # band is narrow, and holds both.
+        near, far = sm.range_band_km(100.0, 1e9, 40.0)
+        assert near < 1.0 and far > 2 ** (1 / 3)
+        assert (near, far) == pytest.approx((0.954, 1.268), abs=1e-3)
+        assert sm.range_band_km(0.0, 1e9, 40.0) is None
+
+    @pytest.mark.parametrize(
+        ("score", "low", "high"),
+        # How strengths read in the benchmark (scripts/magnetometer_false_alarms.py
+        # at its defaults): for the passes found in a score bin, at 3.5σ and at
+        # the default threshold, the bin's median score and the 5th and 95th
+        # percentiles of ln(strength · r³ / k·m), r the true slant range. A
+        # strength read exactly lies between 0 (the UAP on the dipole's equator)
+        # and ln 2 (on its axis); just above a threshold it reads high, so the
+        # band must reach out to where such a pass really was.
+        [(3.69, 0.066, 1.426), (5.76, -0.081, 1.173), (9.02, -0.004, 0.787), (40.0, -0.105, 0.667)],
+        ids=["just-above-3.5", "just-above-5.5", "8-10", "at-the-clip"],
+    )
+    def test_the_range_band_holds_how_strengths_read_at_each_score(self, score, low, high):
+        near, far = sm.band_bounds(score)
+        assert near <= low and high <= far
+
+    def test_the_range_band_narrows_as_the_score_rises(self):
+        scores = (3.0, 3.5, 4.5, 5.5, 7.0, 10.0, 20.0, 40.0)
+        widths = [math.exp((far - near) / 3.0) for near, far in map(sm.band_bounds, scores)]  # far over near
+        assert all(a > b for a, b in zip(widths, widths[1:], strict=False))
+        assert widths[-1] < 1.35  # narrower than the fixed ±15 % band's 1.39 for a strong detection
+        assert sm.band_bounds(2.0) == sm.band_bounds(sm.BAND_LOWEST_SIGMA)  # no pole below the lowest threshold
 
     @pytest.mark.parametrize("readings", [60, 150, 599])
     def test_a_young_noise_estimate_keeps_each_scores_tail_probability(self, readings):
@@ -709,16 +742,19 @@ class TestDetection:
 
     @pytest.mark.parametrize("nodes", [8, 6])
     def test_false_alarms_match_the_model_behind_every_confidence(self, nodes):
-        # At 3.5σ noise alone alarms often enough to count in two hours. The
-        # count must lie in the Poisson band of the fitted model: this is the
-        # calibration every confidence and noise_once_per_h rests on. Six is
-        # the fewest magnetometers that take the common mode out, and leave
-        # the fewest others for each one's median.
-        rig = Rig(nodes=nodes, mag_threshold_sigma=3.5).run(2 * 3600)
+        # At 3σ noise alone alarms about 5.7 times a node-hour, some ninety
+        # times in two hours of eight magnetometers, enough to count: the
+        # count must lie in the 99 % Poisson band of the fitted model, the
+        # calibration every confidence and noise_once_per_h rests on. Here
+        # that admits a coefficient of 427 to 712; at 3.5σ, with a fifth of
+        # the alarms, it admitted 251 to 812. Six is the fewest magnetometers
+        # that take the common mode out, and leave the fewest others for each
+        # one's median.
+        rig = Rig(nodes=nodes, mag_threshold_sigma=3.0).run(2 * 3600)
         for node in rig.network.nodes.values():
             rig.network._close_event(node, node.last_ms)
         card = rig.network.scorecard()
-        expected = sm.false_alarm_rate(3.5) * card["node_hours"]
+        expected = sm.false_alarm_rate(3.0) * card["node_hours"]
         low, high = stats.poisson.ppf([0.005, 0.995], expected)
         assert low <= card["false_alarms"] <= high, (card["false_alarms"], expected)
         assert card["true_detections"] == 0

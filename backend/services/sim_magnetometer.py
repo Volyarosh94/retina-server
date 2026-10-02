@@ -68,7 +68,9 @@ The method, per second of data
    event may open another. The event carries the time of closest approach (t0
    at the peak), its time scale τ in seconds, the strength (the fitted
    signal's peak magnitude, in nT), the score, a confidence, and a range
-   estimate from the strength and the dipole model.
+   band from the strength, the dipole model and the score: a strength read
+   just above a threshold reads high, since noise helped its window over it,
+   so the band reaches further out the lower the score (BAND_NEAR, BAND_FAR).
 6. **Scoring.** The simulator sends the truth beside each reading (the UAP
    field at the node and the nearest UAP). It never feeds detection. It labels
    each event true or false (by whether the UAP's own field could have
@@ -524,12 +526,16 @@ def published_score(score: float) -> float:
 # (Siegmund & Worsley, Ann. Statist. 23, 1995, for location and scale;
 # Worsley, Adv. Appl. Prob. 33, 2001, for χ² fields). The coefficient is a
 # Poisson maximum-likelihood fit to scripts/magnetometer_false_alarms.py:
-# 2,109 node-hours of noise and daily variation at each of 3.5, 4, 4.5, 5,
-# 5.5 and 6σ, eight magnetometers with the common mode subtracted and no
-# storm. The model's rate lies inside the measured 95 % interval at every
-# one, and a free exponent fits as 1.95. The design note has the run. The
-# fit covers 3.5–6σ; thresholds start at 3.
-FALSE_ALARM_COEFFICIENT = 480.0
+# 3,065 node-hours searched of noise and daily variation at each of 3, 3.5,
+# 4, 4.5 and 6σ, and 9,194 at 5 and 5.5σ, where false alarms are rare (the
+# same simulated days, and more of them), eight magnetometers with the common
+# mode subtracted and no storm: 470 (463–477 over seed-days drawn again). The
+# model's rate lies inside the measured 95 % interval at every one, and a
+# free exponent fits as 2.03 (1.87–2.20). Six, seven and twelve magnetometers
+# alarm as eight do over the same simulated days, to within 2.2 % at 3.5σ.
+# The design note has the run. Above 6σ the rate is the model's alone: noise
+# gets there too rarely to count.
+FALSE_ALARM_COEFFICIENT = 470.0
 FALSE_ALARM_POWER = 2.0
 
 
@@ -553,10 +559,34 @@ def garwood(k: int, exposure: float) -> tuple[float, float]:
     return low / exposure, high / exposure
 
 
-# The fitted strength of a strong pass comes out within ~10 % of the true peak
-# field in simulation (noise, and the pass's curvature within one window);
-# the range band allows for 15 % either way.
-STRENGTH_TOLERANCE = 0.15
+# The range band (range_band_km). A dipole of moment m gives a field between
+# k·m/r³ on its equator and twice that on its axis (k = μ0/4π), so a strength S
+# read exactly puts the UAP between r_eq(S) = (k·m/S)^(1/3) and 2^(1/3) of that.
+# The band is drawn in x = ln(S·r³ / k·m), the strength over the equator's
+# field at the distance: from BAND_NEAR to BAND_FAR, each a constant plus a
+# term in 1/(score − BAND_POLE_SIGMA). How far off a strength reads depends on
+# the score it came with. Just above a threshold, noise helped that window over
+# it, and the least-squares fit takes the noise in with the signal: passes
+# found at 5.5–6σ read a median 1.37 of their true peak field (0.81–2.11 for
+# nine in ten), at 3.5–4σ 1.57, while above 15σ they read 0.94 (a pass's τ
+# falling between two of the bank's scales). The fixed ±15 % the band first
+# allowed held the true slant range for 92 % of the passes found at 5.5σ, but
+# for 65 % of those found just above it and 57 % of those just above 3.5σ.
+# These constants are fitted by scripts/magnetometer_false_alarms.py, to the
+# 2,381 passes it found at 3.5, 5, 5.5 and 6σ: the narrowest band, on average,
+# that keeps 97 % of every score bin's passes, from 3.5σ to the 40σ clip,
+# inside each side (97 % being the least at which a band fitted to half the
+# seeds held 90 % of the other half's in every bin), its far end then moved
+# out by 0.015 so that every score bin of every one of those thresholds holds
+# 90 %, and rounded outwards. It holds the true slant range for 97 % of the
+# passes found at 5.5σ, and for 97.5 % of those found just above it; for 94 %
+# or more in every score bin at 3.5, 5 and 5.5σ, and for 91 % or more at 6σ
+# (8–10σ, 30 of 33). Far over near is 1.33 for a strong detection, 1.70 at
+# 5.5σ and 2.45 at 3.5σ; below 3.5σ the band is the fit carried on.
+BAND_POLE_SIGMA = 2.0
+BAND_LOWEST_SIGMA = 3.0  # the lowest threshold the settings allow
+BAND_NEAR = (-0.126, -0.57)
+BAND_FAR = (0.652, 2.30)
 
 
 # Beyond this the interval means only "never": a score at the 40σ clip gives a
@@ -570,20 +600,24 @@ def noise_interval_h(score: float) -> float:
     return NOISE_INTERVAL_MAX_H if rate <= 1.0 / NOISE_INTERVAL_MAX_H else float(f"{1.0 / rate:.3g}")
 
 
-def range_band_km(strength_nt: float, moment_am2: float) -> tuple[float, float] | None:
-    """Distances at which a dipole of this moment produces this field: from
-    its equator at the strength's upper tolerance (nearest) to its axis at
-    the lower (farthest). On the axis |B| = (μ0/4π)·2m/r³, on the equator half.
-    """
+def band_bounds(score: float) -> tuple[float, float]:
+    """The band's bounds in x (see BAND_NEAR) for an event of this score."""
+    s = 1.0 / (max(score, BAND_LOWEST_SIGMA) - BAND_POLE_SIGMA)
+    return BAND_NEAR[0] + BAND_NEAR[1] * s, BAND_FAR[0] + BAND_FAR[1] * s
+
+
+def range_band_km(strength_nt: float, moment_am2: float, score: float) -> tuple[float, float] | None:
+    """The slant ranges, in km, at which a dipole of this moment would put
+    this strength on the magnetometer, allowing for how far off a strength
+    read at this score may be (see BAND_NEAR)."""
     if not strength_nt or strength_nt <= 0 or not moment_am2:
         return None
+    near, far = band_bounds(score)
 
-    def equatorial_m(field_nt):
-        return (1e-7 * moment_am2 * 1e9 / field_nt) ** (1.0 / 3.0)
+    def distance_km(x):
+        return (1e-7 * moment_am2 * 1e9 * math.exp(x) / strength_nt) ** (1.0 / 3.0) / 1000.0
 
-    nearest = equatorial_m(strength_nt * (1 + STRENGTH_TOLERANCE))
-    farthest = equatorial_m(strength_nt * (1 - STRENGTH_TOLERANCE)) * 2 ** (1.0 / 3.0)
-    return (nearest / 1000.0, farthest / 1000.0)
+    return (distance_km(near), distance_km(far))
 
 
 # How strongly a magnetometer's own readings may carry something local, a
@@ -1417,7 +1451,7 @@ class MagnetometerNetwork:
             event.tau_s = _tau_s(scale, times)
             event.strength_nt = self._strength(scale, residual)
             event.confidence = confidence(score)
-            event.range_km = range_band_km(event.strength_nt, self.moment_am2)
+            event.range_km = range_band_km(event.strength_nt, self.moment_am2, score)
             event.uap_energy = self._uap_energy(node, scale)
         # The truth so far: while the event is open the UAP may still be
         # closing in, and the panel shows this.
@@ -1468,7 +1502,7 @@ class MagnetometerNetwork:
             strength_nt=strength,
             tau_s=_tau_s(scale, times),
             confidence=confidence(score),
-            range_km=range_band_km(strength, self.moment_am2),
+            range_km=range_band_km(strength, self.moment_am2, score),
             peak_energy=energy,
             peak_end_ms=int(times[-1]),
             uap_energy=self._uap_energy(node, scale),
