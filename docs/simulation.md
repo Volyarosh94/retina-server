@@ -196,81 +196,35 @@ ignored while seeding runs, for the same one-cache reason.
 ## Magnetometers
 
 The fleet can put a PNI RM3100 magnetometer at some of its receive sites, one
-per roof, named for the radar node beside it (`mag-<node id>`). They exist to
-show what a network of magnetometers beside the radars would see of a UAP
-modelled as a 1e9 A·m² magnetic dipole, and how often it would be fooled.
-The simulator produces the readings and the server detects. Every
-magnetometer route exists only under `SYNTHETIC_FLEET_ENABLED`, and none of
-the magnetometers' data reaches the radar pipeline or `/v1/nodes`. The design
-note
+per roof, named for the radar node beside it (`mag-<node id>`). They show what
+magnetometers beside the radars would see of a UAP modelled as a 1e9 A·m²
+magnetic dipole, and how often they would be fooled. Every magnetometer route exists only
+under `SYNTHETIC_FLEET_ENABLED`, and none of their data reaches the radar
+pipeline or `/v1/nodes`. The design note
 [2026-09-30-simulated-magnetometers.md](design-notes/2026-09-30-simulated-magnetometers.md)
-has the reasoning and the measurements.
+has the reasoning and the measurements, and the library's README
+(`libs/retina-simulation/README.md`) has the field model and the payload.
 
-**Readings.** Once per world step (a second), each magnetometer reads the sum
-of:
+Once per world step (a second) each magnetometer reads WMM2025 at its site, a
+crustal offset, the solar-quiet daily variation, an optional network-wide
+storm and every anomalous object as a dipole, with the RM3100's noise
+quantised to its counts. Aircraft and drones contribute nothing, and with
+`frac_anomalous` at its default of 0 the magnetometers see only the flybys
+asked for. The orchestrator posts the readings once a second, holding up to
+ten seconds of them while posts fail. The truth behind each reading rides
+beside it, for scoring only.
 
-- WMM2025 at its site;
-- a per-site crustal offset;
-- the solar-quiet daily variation;
-- an optional network-wide storm;
-- every anomalous object as a dipole;
-- the RM3100's noise, quantised to its counts so that the readings show the
-  datasheet's figure for the cycle count, which already includes that
-  rounding.
+The detector (`backend/services/sim_magnetometer.py`) subtracts each
+magnetometer's static level and the median of the others' deviations (the
+common mode, applied while six or more report), matches the residual against
+a passing dipole at six time scales from 2 to 64 s, and scores it in σ
+against the magnetometer's own noise. An event carries the time of closest
+approach, strength, score, time scale, a confidence, a range band and
+`calibrated`, and is scored against the truth for a live false-alarm rate
+per node-hour searched.
 
-Aircraft and drones contribute nothing. With `frac_anomalous` at its default
-of 0 the world spawns no UAP of its own, so the magnetometers see only the
-flybys asked for (below). The orchestrator posts the readings to
-`POST /api/sim/magnetometer/push` (simulator key) once a second, holding up
-to ten seconds of them while posts fail. The truth behind each reading (the
-UAP field at the node, the nearest UAP and its slant range) rides beside it,
-for scoring only. The library's README (`libs/retina-simulation/README.md`)
-has the model and the payload.
-
-**Detection** (`backend/services/sim_magnetometer.py`) runs over the whole
-network, once per second of readings:
-
-1. Each magnetometer's static level (a trimmed mean of its last 30 minutes)
-   is subtracted.
-2. The median of other magnetometers' deviations is subtracted, which takes
-   away the daily variation and storms, common to the network. A UAP is
-   local, so the median leaves out any magnetometer with an event open or
-   scoring 3σ, and every magnetometer within 3 km of one. A magnetometer
-   clear of every event that finds no one clear sets those scores aside
-   first; one at or beside an event, which is measuring the pass, takes clear
-   magnetometers only. However few they are, the median follows them, and
-   each window is scored against the extra noise a median of few carries.
-   With no one left, a magnetometer holds its recent common mode for three
-   minutes at most; where a hold ends, and where one clear of every event
-   begins one, no window spans the step. The common mode is subtracted only
-   while six or more magnetometers report: with fewer, a median lets one
-   magnetometer's UAP into the others, so it is left in
-   (`detector.common_mode_applied` says which).
-3. The residual is matched against a passing dipole's signature (Anderson
-   functions) at six time scales from 2 to 64 s, in windows that never span
-   a hole in the readings (more than 5 s).
-4. The best match becomes a score in σ, with the same tail probability as
-   the χ² statistic behind it, against the noise each magnetometer measures
-   from its own last ten minutes of residual.
-
-An event opens at the threshold and carries:
-
-- the time of closest approach;
-- the score;
-- the pass's own time scale τ, its slant range at closest approach over its
-  speed, refined between the six search scales, and the strength in nT
-  measured at that τ;
-- a confidence, and how many node-hours noise alone takes to score as high;
-- a range band, from the strength, the dipole moment and the score;
-- whether the false-alarm model held when it opened (`calibrated`: the
-  common mode subtracted, no storm, readings a second apart).
-
-Each event is scored against the truth, which gives a live false-alarm rate
-per node-hour searched, with a 95 % interval, and a count of the passes of
-20 nT or more and how many were found.
-
-**Settings.** These are keys of the runtime config above, present only under
-`SYNTHETIC_FLEET_ENABLED`. Without it, a PUT carrying one is refused (400):
+**Settings.** These keys of the runtime config are present only under
+`SYNTHETIC_FLEET_ENABLED`; without it, a PUT carrying one is refused (400):
 
 | Key | Default | Meaning |
 |-----|---------|---------|
@@ -282,17 +236,11 @@ per node-hour searched, with a 95 % interval, and a count of the passes of
 | `mag_threshold_sigma` | 5.5 | Detection threshold in σ (3–12). Server-side, applied at once |
 | `mag_common_mode` | true | Subtract the network's common mode (with six or more magnetometers reporting). Server-side, applied at once |
 
-The fleet applies its keys in-process at its next poll: no restart, because
-the magnetometers hold no connection. It receives the two server-side keys
-with the rest and ignores them. A new count or placement re-places the
-magnetometers at once, and one at a new site starts from nothing: it reads
-warming up for about three minutes. On the server, a new cycle count, or the
-common mode switched in or out, starts every magnetometer's noise estimate
-again, and they read warming up for a minute to a minute and a half. The
-false-alarm scorecard describes one configuration at a time, and restarts
-when the threshold, the common mode actually subtracted, the sensor setting
-or the storm changes. The snapshot restores the keys like the other
-simulation keys.
+The fleet applies its keys in-process at its next poll, without a restart,
+and ignores the two server-side ones. A magnetometer at a new site reads
+warming up for about three minutes. The scorecard starts again when the
+threshold, the common mode, the sensor setting or the storm changes. The
+snapshot restores the keys.
 
 **Routes.** All of these are mounted only under `SYNTHETIC_FLEET_ENABLED`:
 
@@ -303,51 +251,24 @@ simulation keys.
 | `GET /api/sim/magnetometers/{node_id}?window=60–1800` | admin | one magnetometer's measured field, residual and score over the last `window` seconds (600 by default), and its events |
 | `POST /api/sim/magnetometers/flyby` | admin | fly a UAP past one magnetometer (or one the fleet picks); answers `{ok, flyby}` and leaves the config stamp unchanged |
 
-The push's bounds are what the fleet sends, with room to spare: at most 100
-magnetometers and 60 readings each, a `ts_ms` within 300 s of the server's
-clock, and no reading more than 5 s after it or an hour before it. An entry
-the server will not publish (a host that is not a synthetic radar node, an
-id not starting `mag-`, a position off the globe) is skipped and counted.
-The map payload's `detector` block carries `common_mode_applied`,
-`reading_period_s` (the median time between readings: each magnetometer's
-over its last 60, then across those reporting), `reading_period_calibrated`
-(near enough a second for the false-alarm model: within 10 %, and once out,
-back within 5 %), the model itself (`false_alarm_model`: its coefficient,
-power and whether it holds now), `pushes_refused` (pushes refused whole
-since the server started; each is readings lost) and `entries_rejected`
-(well-formed entries skipped).
+A push may carry at most 100 magnetometers and 60 readings each, with a
+`ts_ms` within 300 s of the server's clock. An entry the server will not
+publish (a host that is not a synthetic radar node, an id not starting
+`mag-`) is skipped and counted. The map payload's `detector` block carries
+`common_mode_applied`, `reading_period_calibrated`, `false_alarm_model`,
+`pushes_refused` and `entries_rejected`.
 
-A flyby is a command, not a setting. The route writes it into the runtime
-config as `mag_flyby`, with a number and the time of the request, and leaves
-the config's `_updated_at` stamp alone, so the Physics page never takes a
-flyby for somebody else's change of settings. The fleet looks for a request
-at every poll rather than only when the stamp moves. A running fleet flies
-each request once, however many polls serve it, and tells new from old by
-the time, which survives a server restart where the number does not. It
-ignores a request more than two minutes old when it first sees it; a fleet
-that restarts sooner than that after a request flies it again in its new
-world. The UAP is an ordinary anomalous world object on a straight, level
-track, at exactly the closest approach and altitude asked for, so the radar
-nodes see it too. `mag_flyby` is not among the keys the snapshot restores.
+A flyby is a command: the route writes `mag_flyby` into the runtime config
+and leaves the `_updated_at` stamp alone. The fleet flies each request once
+and ignores one more than two minutes old. The UAP is an ordinary anomalous
+world object, so the radar nodes see it too. The snapshot does not restore
+`mag_flyby`.
 
-**The map.** On `/sim` the Magnetometers toggle shows:
-
-- a badge beside each radar site that has one, with a colour and a shape for
-  each state: quiet, elevated, detecting, warming up, or no data;
-- the range band of a detection while it is open, and for a minute after;
-- a summary card with the live false-alarm rate per node-hour searched, how
-  many passes were found, the latest events, and any pushes refused or
-  entries skipped;
-- a panel per magnetometer: ten minutes of score, residual and measured
-  field (|B|, with north, east and down in its tooltip), the time scales it
-  searches (all six, or which and when the rest come), the current event
-  with its truth, and a button that flies a UAP past it;
-- a toast when a detection starts.
-
-The settings are a section of the Physics Layer page (`/sim/physics`), with
-its own Apply and a form that flies a UAP past any magnetometer. The data is
-polled from the admin routes every 2 s and never goes on the aircraft
-WebSocket.
+**The map.** On `/sim` the Magnetometers toggle shows a badge per
+magnetometer by state, a detection's range band, a summary card and a panel
+per magnetometer with ten minutes of readings and a flyby button. The
+settings are a section of the Physics Layer page (`/sim/physics`). The data
+is polled from the admin routes every 2 s.
 
 **Measuring the detector.** `backend/scripts/magnetometer_false_alarms.py`
 runs the simulator's readings through the server's ingest, each push stamped
@@ -359,22 +280,7 @@ cd backend && RETINA_ENV=dev .venv/bin/python -m scripts.magnetometer_false_alar
 ```
 
 It prints a markdown report (`--json` writes the numbers too), and
-`--checkpoint <file>` lets a run that stops carry on where it was. It
-measures:
-
-- the false-alarm rate at each threshold, beside the detector's model of it,
-  with the model's coefficient fitted afresh, and the rate at other network
-  sizes;
-- a storm through its whole course, with and without the common mode, at
-  six, seven and eight magnetometers;
-- the false-alarm rate across the local solar day;
-- the detection probability against distance and speed, at the default
-  threshold and either side of it;
-- how well a detection's strength, time and range band match the truth,
-  with the range band's constants fitted afresh;
-- passes over dense cores (core placement), quiet and in a strong storm.
-
-Rerun it after changing the detector, and carry what it fits over to the
+`--checkpoint <file>` resumes a run that stopped. Rerun it after changing the detector, and carry what it fits over to the
 code: the coefficient to `FALSE_ALARM_COEFFICIENT`, and the range band's
 constants to `BAND_NEAR` and `BAND_FAR`.
 
