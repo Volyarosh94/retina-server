@@ -1452,7 +1452,7 @@ class MagnetometerNetwork:
         event. False if it could not score yet."""
         node.score, node.score_tau_s = 0.0, None
         node.scales, node.longest_scale_s = 0, None
-        if not node.ready:
+        if not node.ready or node.sigma_nt is None:
             return False
         times = node.t_ms.last(LONGEST)[:, 0]
         residual = node.residual.last(LONGEST)
@@ -1495,10 +1495,10 @@ class MagnetometerNetwork:
         node.score = score
         node.score_tau_s = None if scale is None else _tau_s(scale, times)
         if event is None:
-            if score >= threshold:
+            if scale is not None and score >= threshold:
                 self._open_event(node, scale, times, score, energy, residual)
             return True
-        if energy > event.peak_energy:
+        if scale is not None and centre_ms is not None and energy > event.peak_energy:
             event.peak_energy = energy
             event.score_sigma = score
             event.peak_ms = centre_ms
@@ -1529,6 +1529,8 @@ class MagnetometerNetwork:
         so this weighs the magnitude as one axis: for a straight pass about
         three-quarters of the field's own energy (a half to nine-tenths, nine
         passes in ten), and nothing for a UAP that does not move."""
+        if node.sigma_nt is None:
+            return 0.0
         uap = node.uap.last(scale.length)[:, 0]
         left = uap - scale.nuisance @ (scale.nuisance.T @ uap)
         return float(left @ left) / node.sigma_nt**2
@@ -1621,7 +1623,7 @@ class MagnetometerNetwork:
                     self.passes += 1
         elif uap_nt > current["peak_nt"]:
             current["peak_nt"], current["peak_ms"] = uap_nt, t_ms
-        if ours:
+        if ours and event is not None:
             if current is not None and not any(p is current for p in event.credited):
                 event.credited.append(current)
             self._credit(event)
@@ -1660,8 +1662,7 @@ class MagnetometerNetwork:
         return "quiet"
 
     def scorecard(self, now: float | None = None) -> dict:
-        if now is None:
-            now = self._monotonic()
+        now = self._monotonic() if now is None else now
         hours = self.exposure_s / 3600.0
         far = ci = None
         if hours > 0:
@@ -1680,7 +1681,9 @@ class MagnetometerNetwork:
             # peak, at a magnetometer still reporting: an event may yet open
             # for them.
             "passes_open": sum(
-                1 for node in self.nodes.values() if node.open_pass is not None and now - node.heard_at <= STALE_S
+                1
+                for node in self.nodes.values()
+                if node.open_pass is not None and node.heard_at is not None and now - node.heard_at <= STALE_S
             ),
             "pass_min_nt": PASS_MIN_NT,
         }
