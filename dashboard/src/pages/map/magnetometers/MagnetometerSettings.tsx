@@ -492,8 +492,9 @@ function FlybyCard({ network }: { network: MagNetwork | null }) {
         )}
       </div>
       <p className="ps-type-desc ps-settings-desc">
-        At 15 nT of sensor noise a magnetometer finds a pass like this out to about 1.5 km (further if it is slow);
-        the design note has the measured detection probabilities.
+        At 15 nT of sensor noise and the default 5.5σ, a magnetometer finds every pass like this within 1 km, and
+        nine in ten out to about 1.5 km at 100 m/s (1.8 km at 30 m/s, 1.1 km at 300 m/s); the design note has the
+        measured detection probabilities.
       </p>
     </div>
   );
