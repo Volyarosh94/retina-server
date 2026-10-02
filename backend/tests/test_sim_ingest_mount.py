@@ -1,10 +1,11 @@
 """The gate on the simulation ingest mount.
 
-routes/sim_ingest.py holds the two POSTs the synthetic fleet writes
-state.adsb_aircraft and state.ground_truth_trails through, and main.py mounts
-that router only when `synthetic_fleet_enabled` says so. Since ClickUp 86cb49d29
-that rule is the whole of the gate on the write path: the mount used to follow
-from RETINA_ENV not being `production`, so a deployment got the path for being
+routes/sim_ingest.py holds the POSTs the synthetic fleet writes through
+(state.adsb_aircraft, state.ground_truth_trails and the simulated magnetometer
+network) and the admin reads beside them, and main.py mounts that router only
+when `synthetic_fleet_enabled` says so. Since ClickUp 86cb49d29 that rule is
+the whole of the gate on the write path: the mount used to follow from
+RETINA_ENV not being `production`, so a deployment got the path for being
 named `test`. Dropping the check would silently reopen the path everywhere
 rather than fail anything, which is what these pin.
 
@@ -23,7 +24,16 @@ from tests.probe_helpers import run_probe
 # The routes the gate governs. They share one router, so mounting is
 # all-or-nothing; naming them individually is what makes a rename or a move to
 # another router show up here rather than pass quietly.
-SIM_INGEST_ROUTES = frozenset({"/api/sim/adsb/push", "/api/test/ground-truth/push"})
+SIM_INGEST_ROUTES = frozenset(
+    {
+        "/api/sim/adsb/push",
+        "/api/test/ground-truth/push",
+        "/api/sim/magnetometer/push",
+        "/api/sim/magnetometers",
+        "/api/sim/magnetometers/{node_id}",
+        "/api/sim/magnetometers/flyby",
+    }
+)
 
 # A route from a router mounted unconditionally. Asserting it is present in
 # every probe is the control: without it, an absent ingest path could equally

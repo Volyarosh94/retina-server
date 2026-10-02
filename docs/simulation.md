@@ -16,6 +16,9 @@ FleetOrchestrator (retina_simulation/orchestrator.py)
     │       ├─ SimulatedAircraft × N
     │       └─ node views              (per-node observation geometry)
     │
+    ├─ MagnetometerArray        (RM3100s beside some receivers, magnetometer.py)
+    │       └─ POST /api/sim/magnetometer/push every 1 s
+    │
     ├─ AdsbLolClient            (optional real ADS-B feed)
     │
     ├─ config poller            (GET /api/simulation/config every 5 s)
@@ -77,6 +80,10 @@ tab (or `PUT /api/simulation/config`, admin-authed) can change at runtime:
 | `live_adsb_enabled` | true | Pull live aircraft from the feed into the world (off removes them) |
 | `min_aircraft` / `max_aircraft` | *(unset)* | Steady-state bounds for the **synthetic** aircraft |
 | `n_nodes` / `dual_fraction` / `max_range_km` | *(unset)* | Fleet-scene keys — applying one **restarts the fleet** for regeneration |
+
+Where the server runs a synthetic fleet, the same config carries the
+magnetometers' `mag_*` keys too; they are listed under
+[Magnetometers](#magnetometers), below.
 
 The fractions and aircraft counts apply in-process to *new spawns*. The scene
 keys are different: node count, dual-illuminator fraction and a uniform range
@@ -186,6 +193,99 @@ ignored while seeding runs, for the same one-cache reason.
 
 ---
 
+## Magnetometers
+
+The fleet can put a PNI RM3100 magnetometer at some of its receive sites, one
+per roof, named for the radar node beside it (`mag-<node id>`). They show what
+magnetometers beside the radars would see of a UAP modelled as a 1e9 A·m²
+magnetic dipole, and how often they would be fooled. Every magnetometer route exists only
+under `SYNTHETIC_FLEET_ENABLED`, and none of their data reaches the radar
+pipeline or `/v1/nodes`. The design note
+[2026-09-30-simulated-magnetometers.md](design-notes/2026-09-30-simulated-magnetometers.md)
+has the reasoning and the measurements, and the library's README
+(`libs/retina-simulation/README.md`) has the field model and the payload.
+
+Once per world step (a second) each magnetometer reads WMM2025 at its site, a
+crustal offset, the solar-quiet daily variation, an optional network-wide
+storm and every anomalous object as a dipole, with the RM3100's noise
+quantised to its counts. Aircraft and drones contribute nothing, and with
+`frac_anomalous` at its default of 0 the magnetometers see only the flybys
+asked for. The orchestrator posts the readings once a second, holding up to
+ten seconds of them while posts fail. The truth behind each reading rides
+beside it, for scoring only.
+
+The detector (`backend/services/sim_magnetometer.py`) subtracts each
+magnetometer's static level and the median of the others' deviations (the
+common mode, applied while six or more report), matches the residual against
+a passing dipole at six time scales from 2 to 64 s, and scores it in σ
+against the magnetometer's own noise. An event carries the time of closest
+approach, strength, score, time scale, a confidence, a range band and
+`calibrated`, and is scored against the truth for a live false-alarm rate
+per node-hour searched.
+
+**Settings.** These keys of the runtime config are present only under
+`SYNTHETIC_FLEET_ENABLED`; without it, a PUT carrying one is refused (400):
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `mag_enabled` | true | Place magnetometers at all |
+| `mag_n_nodes` | 8 | How many (0–60), never more than the fleet has sites |
+| `mag_placement` | `spread` | `spread` across the fleet, `core` the sites nearest its centre, or `random` (seeded) |
+| `mag_cycle_count` | 200 | The sensor's cycle count: 50, 100, 200, 400 or 800 (30, 20, 15, ~11.3, ~8.4 nT noise) |
+| `mag_storm` | false | Run a storm (Dst −150 nT, pulsations), from the moment it is switched on |
+| `mag_threshold_sigma` | 5.5 | Detection threshold in σ (3–12). Server-side, applied at once |
+| `mag_common_mode` | true | Subtract the network's common mode (with six or more magnetometers reporting). Server-side, applied at once |
+
+The fleet applies its keys in-process at its next poll, without a restart,
+and ignores the two server-side ones. A magnetometer at a new site reads
+warming up for about three minutes. The scorecard starts again when the
+threshold, the common mode, the sensor setting or the storm changes. The
+snapshot restores the keys.
+
+**Routes.** All of these are mounted only under `SYNTHETIC_FLEET_ENABLED`:
+
+| Route | Who | What |
+|-------|-----|------|
+| `POST /api/sim/magnetometer/push` | simulator key | readings from the fleet, once a second; a push the fleet could not have sent is refused whole (400, naming the field) |
+| `GET /api/sim/magnetometers` | admin | every magnetometer, the latest events, the scorecard, the settings and the detector's state |
+| `GET /api/sim/magnetometers/{node_id}?window=60–1800` | admin | one magnetometer's measured field, residual and score over the last `window` seconds (600 by default), and its events |
+| `POST /api/sim/magnetometers/flyby` | admin | fly a UAP past one magnetometer (or one the fleet picks); answers `{ok, flyby}` and leaves the config stamp unchanged |
+
+A push may carry at most 100 magnetometers and 60 readings each, with a
+`ts_ms` within 300 s of the server's clock. An entry the server will not
+publish (a host that is not a synthetic radar node, an id not starting
+`mag-`) is skipped and counted. The map payload's `detector` block carries
+`common_mode_applied`, `reading_period_calibrated`, `false_alarm_model`,
+`pushes_refused` and `entries_rejected`.
+
+A flyby is a command: the route writes `mag_flyby` into the runtime config
+and leaves the `_updated_at` stamp alone. The fleet flies each request once
+and ignores one more than two minutes old. The UAP is an ordinary anomalous
+world object, so the radar nodes see it too. The snapshot does not restore
+`mag_flyby`.
+
+**The map.** On `/sim` the Magnetometers toggle shows a badge per
+magnetometer by state, a detection's range band, a summary card and a panel
+per magnetometer with ten minutes of readings and a flyby button. The
+settings are a section of the Physics Layer page (`/sim/physics`). The data
+is polled from the admin routes every 2 s.
+
+**Measuring the detector.** `backend/scripts/magnetometer_false_alarms.py`
+runs the simulator's readings through the server's ingest, each push stamped
+with its simulated time, on several processes:
+
+```bash
+cd backend && RETINA_ENV=dev .venv/bin/python -m scripts.magnetometer_false_alarms --json magnetometers.json  # about 1¾ h on 8 processes
+cd backend && RETINA_ENV=dev .venv/bin/python -m scripts.magnetometer_false_alarms --quick                     # minutes: does it run
+```
+
+It prints a markdown report (`--json` writes the numbers too), and
+`--checkpoint <file>` resumes a run that stopped. Rerun it after changing the detector, and carry what it fits over to the
+code: the coefficient to `FALSE_ALARM_COEFFICIENT`, and the range band's
+constants to `BAND_NEAR` and `BAND_FAR`.
+
+---
+
 ## TCP Protocol (NodeConnection)
 
 ```jsonc
@@ -225,27 +325,59 @@ unidirectional node → server.
 ## Running the Fleet Locally
 
 ```bash
-# Greenville scene matching staging's shape, against a local backend
+# Greenville scene matching staging's shape, against a local backend. The
+# layout is the generator's; the orchestrator then flies the scene it wrote,
+# as deploy/fleet-entrypoint.sh does.
+python3 -m retina_simulation.generator \
+  --nodes 30 --metro gvl --layout scatter --n-cluster 20 --seed 42 \
+  --output fleet_config.json
 python3 -m retina_simulation.orchestrator \
-  --nodes 30 --metro gvl --layout scatter --n-cluster 20 \
+  --config fleet_config.json --metro gvl \
   --mode adsb --interval 0.5 \
   --min-aircraft 20 --max-aircraft 40 \
-  --host localhost --port 3012 --seed 42
+  --host localhost --port 3012 --validation-url http://localhost:8000
 ```
 
-Key parameters:
+The backend must run with `SYNTHETIC_FLEET_ENABLED=1`, as ONBOARDING's quick
+start does: without it, every push the fleet makes over HTTP (ground truth,
+ADS-B, the magnetometers' readings) answers 404, and the Physics page has no
+magnetometer settings.
+
+The first fleet generated for a metro (by the generator, or by the
+orchestrator when it has no config file to fly) asks the Tower Search API
+(towers.retina.fm) for that metro's towers and caches the answer in
+`retina_simulation/metro_tower_cache.json`. That file is tracked, and the
+backend's environment installs the library from `libs/retina-simulation`, so
+the run leaves the submodule modified. Discard the change rather than commit
+it: `git -C libs/retina-simulation checkout -- retina_simulation/metro_tower_cache.json`.
+
+Key generator flags (`python3 -m retina_simulation.generator --help` lists
+the rest):
 
 | Flag | Default | Effect |
 |------|---------|--------|
 | `--nodes` | 200 | Total synthetic nodes to generate |
-| `--metro` | (none) | Scope scene + traffic + ADS-B to one metro |
+| `--metro` | (none) | Scope the scene to one metro |
 | `--layout` | `ring` | Site layout: `ring`, `dual`, `scatter` |
-| `--n-cluster` | — | Scatter cluster size |
-| `--interval` | 5.0 s | Seconds between detection frames per node |
+| `--n-cluster` | 30 | The layout's share of the nodes: ring receivers (split across `--n-clusters` rings), dual nodes (two per site) or scatter sites |
+| `--seed` | 42 | Deterministic scene generation. The seed is stamped into the config, and the magnetometers follow it |
+| `--output` | `fleet_config.json` | Where the config is written |
+
+Key orchestrator flags (`python3 -m retina_simulation.orchestrator --help`):
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `--config` | `fleet_config.json` | The generator's config to fly; with no such file, the orchestrator generates a fleet itself |
+| `--metro` | (none) | The metro's waypoint net for traffic, and the area for ADS-B |
+| `--host` / `--port` | `localhost` / 3012 | The server's TCP node port |
+| `--validation-url` | `http://localhost:8000` | The server's HTTP API: config polls, and the ground-truth, ADS-B and magnetometer pushes |
+| `--mode` | `adsb` | `detection`, `adsb` or `anomalous` |
+| `--interval` | 0.5 s | Seconds between detection frames per node |
 | `--time-scale` | 1.0 | Simulation speed multiplier |
-| `--concurrency` | 20 | Max simultaneous TCP connects at startup |
-| `--min-aircraft` / `--max-aircraft` | 5 / 20 | Aircraft count range (runtime config can override) |
-| `--seed` | — | Deterministic scene generation |
+| `--concurrency` | 50 | Max simultaneous TCP connects at startup |
+| `--min-aircraft` / `--max-aircraft` | 0 / 0 | Steady-state synthetic aircraft; 0 picks from the node count (under `--metro`, at least 15 / 30). The runtime config can override |
+| `--seed` | 42 | Seeds a fleet the orchestrator generates itself, and the magnetometers when the config carries no stamp; otherwise the generator's stamp wins |
+| `--magnetometers` / `--mag-placement` | 8 / `spread` | Starting magnetometer count and placement; the runtime config's `mag_*` keys take over at the first poll |
 
 Beam width needs no flag: every antenna is the 42° Yagi. `--beam-width-deg`
 exists only as an explicit override for experiments.

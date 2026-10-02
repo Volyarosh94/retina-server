@@ -121,6 +121,15 @@ _SIM_CONFIG_RESTORE_KEYS = frozenset(
         "max_range_km",
         "n_nodes",
         "dual_fraction",
+        # Magnetometer settings. Not the flyby request: that is an action,
+        # and one that survived a restart would fire a UAP nobody just asked for.
+        "mag_enabled",
+        "mag_n_nodes",
+        "mag_placement",
+        "mag_cycle_count",
+        "mag_storm",
+        "mag_threshold_sigma",
+        "mag_common_mode",
         "_updated_at",
     }
 )

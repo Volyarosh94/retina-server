@@ -219,6 +219,11 @@ calibration_claims_rejected_immature
 # Same string-keyed bump_counter shape, from routes/sim_ingest.py's
 # transponder-hex gate on /api/sim/adsb/push.
 sim_adsb_push_rejected_hex
+# Bumped by name through state.bump_counter("sim_magnetometer_push_rejected")
+# and ("sim_magnetometer_push_refused")
+#   backend/routes/sim_ingest.py
+sim_magnetometer_push_rejected
+sim_magnetometer_push_refused
 
 # Dark-follow ineligibility counters (services/dark_follow.py _build_targets),
 # bumped by name through state.bump_counter like the rest of the funnel.

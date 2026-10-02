@@ -197,6 +197,7 @@ def _reset_module_state():
         node_refs,
         probation,
         publication,
+        sim_magnetometer,
         tcp_handler,
         track_gates,
     )
@@ -222,6 +223,7 @@ def _reset_module_state():
         infrastructure,
         periodic,
         admin,
+        sim_magnetometer,
     ):
         mod._reset_for_tests()
     yield

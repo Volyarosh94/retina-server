@@ -2,6 +2,7 @@ import { altitudeLegend } from "./icons";
 import { truthLegend } from "./truthColor";
 import { usePalette } from "./useMapTheme";
 import { useMapPreference } from "./useMapPreference";
+import MagnetometerLegend from "./magnetometers/MagnetometerLegend";
 
 const NO_TRUTH_CLASSES: ReadonlySet<string> = new Set();
 
@@ -13,7 +14,7 @@ const NO_TRUTH_CLASSES: ReadonlySet<string> = new Set();
  * picture, not part of the chrome, so it now sits on the map and collapses to
  * its header for anyone who has learnt the colours.
  */
-export default function MapLegend({ colorByAlt, showGroundTruth, truthClasses = NO_TRUTH_CLASSES, showIlluminators, hasPlayback }) {
+export default function MapLegend({ colorByAlt, showGroundTruth, truthClasses = NO_TRUTH_CLASSES, showIlluminators, hasPlayback, showMagnetometers = false }) {
   const palette = usePalette();
   const { ILLUMINATOR, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED, NODE } = palette;
   const [open, setOpen] = useMapPreference("legendOpen", true);
@@ -53,6 +54,9 @@ export default function MapLegend({ colorByAlt, showGroundTruth, truthClasses = 
           )}
           <LegendItem color={NODE} label="Node" />
           {showIlluminators && <LegendItem color={ILLUMINATOR} label="Illuminator" />}
+          {/* The badges themselves, shape and all, so a magnetometer is never
+              read as a node dot and each state is keyed by more than a hue. */}
+          {showMagnetometers && <MagnetometerLegend />}
         </div>
       )}
     </div>

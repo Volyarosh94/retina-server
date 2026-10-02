@@ -1,0 +1,466 @@
+/* The magnetometer layer and panel on the /sim map. Colours come from the
+   map palette (the badge's --mag-* variables, set per state) or the console's
+   tokens. Text takes the console's tokens only: the palette's values are
+   measured against the basemap, not against a panel, and as small text on a
+   card several of them fall short of 4.5:1. */
+
+.mag-marker {
+  background: transparent;
+  border: none;
+}
+
+.mag-badge {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  filter: var(--icon-shadow);
+  cursor: pointer;
+}
+
+/* Detecting: a ring that pulses out from the badge, the same idiom as the
+   anomalous-track ring, so "something is here" reads the same way. */
+.mag-badge.mag-alarm {
+  animation: mag-pulse 1.4s ease-out infinite;
+}
+
+@keyframes mag-pulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--mag-pulse);
+  }
+  100% {
+    box-shadow: 0 0 0 12px var(--mag-pulse-end);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mag-badge.mag-alarm {
+    animation: none;
+    box-shadow: 0 0 0 3px var(--mag-halo);
+  }
+}
+
+/* The range band never takes a click: it lies over the aircraft and truth
+   dots it is there to point at. */
+.mag-range-band {
+  pointer-events: none;
+}
+
+.mag-tooltip {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* The network summary: top right of the map, where toasts (bottom right) and
+   the legend (bottom left) are not. */
+.mag-summary {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 900;
+  width: 268px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--panel-shadow);
+  font-size: 12px;
+  overflow: hidden;
+}
+
+.mag-summary-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--bg-secondary);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: left;
+}
+
+.mag-summary-header .mag-summary-count {
+  margin-left: auto;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.mag-summary-header .mag-summary-count.mag-detecting {
+  color: var(--error-ink);
+}
+
+.mag-summary-body {
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mag-summary-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text-secondary);
+}
+
+.mag-summary-row > span {
+  white-space: nowrap;
+}
+
+.mag-summary-row strong {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.mag-summary-sub {
+  margin-top: -4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.mag-summary-note {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* How passes are counted: a disclosure, so the rule reaches the keyboard and
+   a screen reader as well as a pointer. The surface's own focus ring marks
+   its summary. */
+.mag-summary-help {
+  margin-top: -2px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.mag-summary-help summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.mag-summary-help p {
+  margin: 4px 0 0;
+}
+
+/* What the server turned away from the fleet: shown only when it has turned
+   something away, in plain words and the secondary ink, as a fact to look
+   into rather than an alarm. */
+.mag-summary-fleet {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.mag-event-list {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.mag-event-list button {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 6px;
+  row-gap: 1px;
+  padding: 4px 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.mag-event-list button:hover {
+  background: var(--bg-secondary);
+}
+
+/* An event whose magnetometer has since been taken away: there is nothing
+   left to open. */
+.mag-event-list button:disabled {
+  cursor: default;
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.mag-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.mag-event-list .mag-dot {
+  grid-row: span 2;
+}
+
+/* An event's dot, in --mag-dot (set per event): filled while it is a
+   detection going on, a ring once it has closed. */
+.mag-dot-live {
+  background: var(--mag-dot);
+}
+
+.mag-dot-past {
+  box-shadow: inset 0 0 0 1.5px var(--mag-dot);
+}
+
+.mag-event-host {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.mag-event-time {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.mag-event-detail {
+  grid-column: 2 / 4;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The magnetometer panel shares the aircraft panel's frame (.detail-panel);
+   its charts need the width the aircraft fields leave to their values. */
+.mag-panel .detail-panel-body {
+  padding-right: 10px;
+}
+
+.mag-flyby {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.mag-flyby .btn {
+  align-self: flex-start;
+}
+
+/* A warning in the panel: why a pass now may go unseen, or why a
+   detection's confidence is not given. In the warning's ink, which reads at
+   4.5:1 or better on the card where the muted caption's does not. */
+.mag-caveat {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--warning-ink);
+}
+
+/* A request the server refused, in the error's ink for the same reason. */
+.mag-error {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--error-ink);
+}
+
+.mag-chart {
+  width: 100%;
+  height: 120px;
+  margin: 4px 0 2px;
+}
+
+/* A chart with nothing to draw says why, in the space it will draw in. */
+.mag-chart-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 0 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.mag-chart-caption {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* The residual chart's key: one short line per axis, drawn in its series. */
+.mag-chart-key {
+  display: flex;
+  gap: 12px;
+  margin: 0 0 4px;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.mag-chart-key li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.mag-key-swatch {
+  width: 12px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+/* What happened to a magnetometer or its detection, where a field would only
+   show a dash. */
+.mag-notice {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+/* The badge, small, beside words that say the same: the panel's state and
+   the legend. */
+.mag-glyph {
+  display: inline-flex;
+  flex-shrink: 0;
+  filter: var(--icon-shadow);
+}
+
+.mag-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mag-state-quiet {
+  color: var(--text-primary);
+}
+
+.mag-state-elevated {
+  color: var(--warning-ink);
+}
+
+.mag-state-alarm {
+  color: var(--error-ink);
+}
+
+.mag-state-warming_up,
+.mag-state-stale,
+.mag-state-unknown {
+  color: var(--text-secondary);
+}
+
+.detail-section-title.mag-live-title {
+  color: var(--error-ink);
+}
+
+/* ── The map legend's key to the badges ──────────────────────── */
+
+.mag-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.mag-legend-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.mag-legend-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* ── The Physics tab's Magnetometers section ─────────────────── */
+/* Laid out with the page's own classes (ps-scene-section, ps-settings-grid,
+   ps-settings-card...); only what the page has no class for lives here. */
+
+.ps-mag-section .ps-settings-grid {
+  margin-bottom: 14px;
+}
+
+.ps-select,
+.ps-number {
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+}
+
+.ps-select:disabled {
+  opacity: 0.5;
+}
+
+.ps-flyby-card {
+  margin-top: 4px;
+}
+
+.ps-flyby-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px 14px;
+  margin: 8px 0 14px;
+}
+
+.ps-flyby-grid label,
+.ps-flyby-field {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* Scoped like the surface's own input rule, which it has to outrank. */
+.app.map-surface .ps-number[aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+.ps-field-error {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--error-ink);
+}
+
+.ps-flyby-caveat {
+  margin: -6px 0 12px;
+  color: var(--warning-ink);
+}
+
+/* Beside the section's Apply: its edits are not running yet, and the page
+   counts them as unapplied too. Outlined rather than on the warning wash,
+   which takes the ink under 4.5:1 on the light section. */
+.ps-unapplied-chip {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--warning-ink);
+  border: 1px solid currentColor;
+  border-radius: 12px;
+  padding: 2px 9px;
+}
+
+.ps-flyby-card .ps-actions {
+  margin-bottom: 10px;
+}

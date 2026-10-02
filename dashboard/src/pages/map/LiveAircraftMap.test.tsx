@@ -1,10 +1,11 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Children, isValidElement, type ReactElement } from "react";
 import LiveAircraftMap from "./LiveAircraftMap";
 import { MapThemeProvider } from "./useMapTheme";
 import { ThemeProvider, useTheme } from "../../context/ThemeContext";
 import { stubMatchMedia } from "../../test/matchMedia";
+import { network as magnetometerNetwork } from "../../test/magnetometerNetwork";
 
 // Leaflet layers need a browser layout. Keep the real map controller, toolbar,
 // playback and feed lifecycle; geometry and layer helpers have their own tests.
@@ -301,4 +302,152 @@ it("offers no ground truth on the real-only feed even beside a fleet", async () 
   render(<MapThemeProvider><LiveAircraftMap feed="real" /></MapThemeProvider>);
   await screen.findByRole("checkbox", { name: "My nodes only" });
   expect(screen.queryByRole("button", { name: "Debug Truth" })).not.toBeInTheDocument();
+});
+
+it("offers the magnetometers on /sim beside a synthetic fleet, and hides them on request", async () => {
+  owner.syntheticFleet = true;
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
+    ok: true,
+    json: async () =>
+      url.endsWith("/sim/magnetometers") ? magnetometerNetwork()
+        : url.endsWith("/auth/me/nodes") ? [{ node_ref: "mine" }]
+          : {},
+  })));
+  render(<MapThemeProvider><LiveAircraftMap feed="synthetic" /></MapThemeProvider>);
+  const toggle = await screen.findByRole("button", { name: "Magnetometers" });
+  expect(toggle).toHaveAttribute("aria-pressed", "true");
+  expect(await screen.findByText("3 placed · 1 detecting")).toBeInTheDocument();
+
+  fireEvent.click(toggle);
+  expect(toggle).toHaveAttribute("aria-pressed", "false");
+  expect(screen.queryByText("3 placed · 1 detecting")).not.toBeInTheDocument();
+  // The poll that stopped settles inside the test, not after it.
+  await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+});
+
+it("offers no magnetometers, and asks for none, off /sim or without a fleet", async () => {
+  owner.syntheticFleet = true;
+  const real = render(<MapThemeProvider><LiveAircraftMap feed="real" /></MapThemeProvider>);
+  await screen.findByRole("checkbox", { name: "My nodes only" });
+  expect(screen.queryByRole("button", { name: "Magnetometers" })).not.toBeInTheDocument();
+  real.unmount();
+
+  owner.syntheticFleet = false;
+  render(<MapThemeProvider><LiveAircraftMap feed="synthetic" /></MapThemeProvider>);
+  await screen.findByRole("button", { name: /Pause/ });
+  expect(screen.queryByRole("button", { name: "Magnetometers" })).not.toBeInTheDocument();
+  expect(vi.mocked(fetch).mock.calls.map(([url]) => String(url))).not.toContainEqual(
+    expect.stringContaining("/sim/magnetometers"),
+  );
+});
+
+/** The /sim map beside a fleet, with the magnetometer routes answering. */
+function renderSimWithMagnetometers() {
+  owner.syntheticFleet = true;
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
+    ok: true,
+    json: async () =>
+      url.endsWith("/sim/magnetometers") ? magnetometerNetwork()
+        : url.includes("/sim/magnetometers/mag-synth-002?") ? {
+          node_id: "mag-synth-002",
+          host_node_id: "synth-002",
+          threshold_sigma: 5.5,
+          sigma_nt: 15.2,
+          series: { t: [], x: [], y: [], z: [], residual: [], score: [], bx: [], by: [], bz: [], b: [] },
+          events: [],
+        }
+          : url.endsWith("/auth/me/nodes") ? [{ node_ref: "mine" }]
+            : {},
+  })));
+  // Inside the surface, as MapPage mounts it: the map's shortcuts answer only
+  // to keys pressed there.
+  return render(
+    <div className="app map-surface">
+      <MapThemeProvider><LiveAircraftMap feed="synthetic" /></MapThemeProvider>
+    </div>,
+  );
+}
+
+it("shares the side panel between a magnetometer and an aircraft, and Escape closes either", async () => {
+  const { container } = renderSimWithMagnetometers();
+  await screen.findByText("3 placed · 1 detecting");
+  act(() => {
+    Socket.instances[0].readyState = Socket.OPEN;
+    Socket.instances[0].onopen?.();
+    Socket.instances[0].onmessage?.({ data: JSON.stringify({
+      // Claimed by a synthetic node: /sim shows the simulated fleet's tracks only.
+      aircraft: [{ hex: "abc123", flight: "TEST1", lat: 51, lon: -1, position_source: "adsb_single_node", node_ref: "synth-001" }],
+    }) });
+  });
+  act(() => {
+    for (let i = 0; i < 30; i++) {
+      const calls = vi.mocked(requestAnimationFrame).mock.calls;
+      calls[calls.length - 1][0](i * 16);
+    }
+  });
+  const magnetometerPanel = () => screen.queryByRole("region", { name: "Magnetometer" });
+  const aircraftPanel = () => container.querySelector(".detail-panel:not(.mag-panel)");
+
+  fireEvent.click(screen.getByRole("button", { name: /synth-002/ }));
+  expect(magnetometerPanel()).toBeInTheDocument();
+
+  // An aircraft takes the panel...
+  fireEvent.click(screen.getByText("TEST1"));
+  expect(magnetometerPanel()).not.toBeInTheDocument();
+  expect(aircraftPanel()).not.toBeNull();
+
+  // ...and a magnetometer takes it back.
+  fireEvent.click(screen.getByRole("button", { name: /synth-002/ }));
+  expect(magnetometerPanel()).toBeInTheDocument();
+  expect(aircraftPanel()).toBeNull();
+
+  fireEvent.keyDown(window, { key: "Escape" });
+  expect(magnetometerPanel()).not.toBeInTheDocument();
+  expect(aircraftPanel()).toBeNull();
+});
+
+it("closes the magnetometer panel with the layer, and does not bring it back with it", async () => {
+  renderSimWithMagnetometers();
+  fireEvent.click(await screen.findByRole("button", { name: /synth-002/ }));
+  expect(screen.getByRole("region", { name: "Magnetometer" })).toBeInTheDocument();
+
+  const toggle = screen.getByRole("button", { name: "Magnetometers" });
+  fireEvent.click(toggle);
+  expect(screen.queryByRole("region", { name: "Magnetometer" })).not.toBeInTheDocument();
+  fireEvent.click(toggle);
+  await screen.findByText("3 placed · 1 detecting");
+  expect(screen.queryByRole("region", { name: "Magnetometer" })).not.toBeInTheDocument();
+});
+
+// Space is the map's pause, and was taken from whatever button held focus.
+it("lets Space press a focused button on the map rather than pause the feed", async () => {
+  renderSimWithMagnetometers();
+  const entry = await screen.findByRole("button", { name: /synth-002/ });
+  entry.focus();
+  fireEvent.keyDown(entry, { key: " " });
+  expect(screen.getByRole("button", { name: /Pause/ })).toBeInTheDocument();
+  // With nothing focused it is still the pause.
+  entry.blur();
+  fireEvent.keyDown(window, { key: " " });
+  expect(screen.getByRole("button", { name: /Resume/ })).toBeInTheDocument();
+});
+
+it("says in its shortcut help that Escape closes a magnetometer's panel too", async () => {
+  renderSimWithMagnetometers();
+  await screen.findByText("3 placed · 1 detecting");
+  fireEvent.keyDown(window, { key: "?" });
+  expect(within(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).getByText("Clear search / close the aircraft or magnetometer panel")).toBeInTheDocument();
+});
+
+it("keys every magnetometer badge in the legend, grey ones included", async () => {
+  renderSimWithMagnetometers();
+  await screen.findByText("3 placed · 1 detecting");
+  const legend = within(screen.getByRole("list", { name: "Magnetometer states" }));
+  expect(legend.getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+    "Quiet",
+    "Elevated, near the threshold",
+    "Detecting",
+    "Warming up",
+    "No data",
+  ]);
 });

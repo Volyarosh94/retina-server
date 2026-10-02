@@ -3,6 +3,8 @@ interface ShortcutHelpProps {
   onClose: () => void;
   /** Whether G does anything on this page; see truthAvailable in LiveAircraftMap. */
   truthAvailable?: boolean;
+  /** Whether this page has magnetometers, whose panel Escape closes too (/sim). */
+  magnetometersAvailable?: boolean;
 }
 
 // Keep in sync with `shortcutMap` in LiveAircraftMap.tsx — this table is the
@@ -11,7 +13,7 @@ interface ShortcutHelpProps {
 const SHORTCUTS: Array<[string, string]> = [
   ["?",       "Show / hide this help"],
   ["/",       "Focus the aircraft search box"],
-  ["Escape",  "Clear search / deselect aircraft"],
+  ["Escape",  "Clear search / close the aircraft panel"],
   ["Space",   "Pause / resume live feed"],
   ["F",       "Toggle filter panel"],
   ["L",       "Toggle aircraft labels"],
@@ -30,8 +32,10 @@ const SHORTCUTS: Array<[string, string]> = [
   ["N",       "Toggle emergency-squawk sound"],
 ];
 
-export default function ShortcutHelp({ visible, onClose, truthAvailable = false }: ShortcutHelpProps) {
+export default function ShortcutHelp({ visible, onClose, truthAvailable = false, magnetometersAvailable = false }: ShortcutHelpProps) {
   if (!visible) return null;
+  const label = (key: string, text: string) =>
+    key === "Escape" && magnetometersAvailable ? "Clear search / close the aircraft or magnetometer panel" : text;
   return (
     <div className="shortcut-backdrop" onClick={onClose}>
       <div
@@ -49,18 +53,18 @@ export default function ShortcutHelp({ visible, onClose, truthAvailable = false 
         </div>
         <table>
           <tbody>
-            {SHORTCUTS.filter(([key]) => key !== "G" || truthAvailable).map(([key, label]) => (
+            {SHORTCUTS.filter(([key]) => key !== "G" || truthAvailable).map(([key, text]) => (
               <tr key={key}>
                 <td>
                   <kbd className="shortcut-key">{key}</kbd>
                 </td>
-                <td>{label}</td>
+                <td>{label(key, text)}</td>
               </tr>
             ))}
           </tbody>
         </table>
         <div className="shortcut-dialog-footer">
-          Shortcuts are ignored while typing in the search box.
+          Shortcuts are ignored while typing in the search box, and Space and Enter are left to a focused button or link.
         </div>
       </div>
     </div>
