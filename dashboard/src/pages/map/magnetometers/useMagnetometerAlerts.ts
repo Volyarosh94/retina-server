@@ -1,6 +1,5 @@
 import { useEffect, useRef } from "react";
 import { toast } from "../toast";
-import { formatRange } from "./format";
 import type { MagNetwork } from "./types";
 
 /** More detections than this starting in one answer share a toast. */
@@ -8,9 +7,11 @@ const MAX_SEPARATE_TOASTS = 3;
 
 /**
  * A toast when a magnetometer starts detecting, so a detection is noticed
- * wherever the map is scrolled. Events already open when the page loads, or
- * when the layer is turned back on, are not announced: only ones that begin
- * while you watch.
+ * wherever the map is scrolled. It says only that: an event's strength and
+ * range when it opens come from a score just over the threshold, the weakest
+ * and widest they will be, and the summary and the panel follow them as the
+ * pass goes on. Events already open when the page loads, or when the layer is
+ * turned back on, are not announced: only ones that begin while you watch.
  *
  * What has been seen is the events of the last answer, and belongs to one
  * run of the server. A restarted server begins its events again, and all of
@@ -36,16 +37,11 @@ export function useMagnetometerAlerts(network: MagNetwork | null) {
       // in one second; one toast says so rather than a column of them.
       const hosts = started.slice(0, MAX_SEPARATE_TOASTS).map((e) => e.host_node_id).join(", ");
       toast(
-        `${started.length} magnetometers started detecting: beside ${hosts} and ${started.length - MAX_SEPARATE_TOASTS} more`,
+        `${started.length} magnetometers started detecting: beside ${hosts} and ${started.length - MAX_SEPARATE_TOASTS} more.`,
         opts,
       );
       return;
     }
-    for (const event of started) {
-      toast(
-        `Magnetometer beside ${event.host_node_id}: ${Math.round(event.strength_nt)} nT, UAP ${formatRange(event.range_km)} away`,
-        opts,
-      );
-    }
+    for (const event of started) toast(`Magnetometer beside ${event.host_node_id} started detecting.`, opts);
   }, [network]);
 }

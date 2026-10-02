@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { request } from "@retina/shared";
 import { API_BASE } from "../constants";
 import type { MagState } from "./types";
@@ -112,4 +113,63 @@ export async function requestFlyby(nodeId: string | null, pass: FlybyPass): Prom
     body: JSON.stringify({ ...pass, node_id: nodeId || undefined }),
   });
   return { seq: typeof body?.flyby?.seq === "number" ? body.flyby.seq : null };
+}
+
+/** A flyby asked for, and when it passes by this browser's clock. */
+export interface RequestedFlyby {
+  seq: number | null;
+  /** The radar node the magnetometer it passes sits beside, or null where the simulator picks it. */
+  host: string | null;
+  /** When its closest approach comes, give or take the fleet's config poll. */
+  dueMs: number;
+  /** Said on the /sim map, where the summary is to hand, rather than on the Physics page. */
+  onMap: boolean;
+}
+
+/**
+ * When a flyby asked for at `requestedMs` passes: the fleet picks the request
+ * up at its next config poll and times the pass from then.
+ */
+export function flybyDue(requestedMs: number, leadS: number): number {
+  return requestedMs + (leadS + FLEET_POLL_S) * 1000;
+}
+
+/**
+ * How long a flyby's message stays after its closest approach. By then the
+ * detection it set off, if any, has closed, and the summary has counted the
+ * pass as found or missed.
+ */
+export const FLYBY_MESSAGE_AFTER_MS = 5 * 60_000;
+
+/**
+ * What to say of a flyby at `nowMs`: when its closest approach comes; once it
+ * has, that it passed and where to see whether it was detected; then nothing.
+ */
+export function flybyMessage(flyby: RequestedFlyby, nowMs: number): string | null {
+  if (nowMs >= flyby.dueMs + FLYBY_MESSAGE_AFTER_MS) return null;
+  const name = `UAP flyby #${flyby.seq ?? "?"}`;
+  const at = new Date(flyby.dueMs).toLocaleTimeString();
+  if (nowMs < flyby.dueMs) {
+    const past = flyby.host ?? "a magnetometer the simulator picks";
+    return `${name} on its way past ${past}: closest approach at about ${at}.${flyby.onMap ? "" : " Watch it on the /sim map."}`;
+  }
+  const where = flyby.onMap ? "the summary" : "the summary on the /sim map";
+  return `${name} passed ${flyby.host ? `${flyby.host} ` : ""}at about ${at}: ${where} shows whether it was detected.`;
+}
+
+/**
+ * That message, kept true as time goes by. It changes only when the closest
+ * approach comes and when the message is due to go, so the clock is read
+ * again then, not every second.
+ */
+export function useFlybyMessage(flyby: RequestedFlyby | null): string | null {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!flyby) return;
+    const next = [flyby.dueMs, flyby.dueMs + FLYBY_MESSAGE_AFTER_MS].find((t) => t > Date.now());
+    if (next === undefined) return;
+    const timer = window.setTimeout(() => setNow(Date.now()), next - Date.now());
+    return () => window.clearTimeout(timer);
+  }, [flyby, now]);
+  return flyby ? flybyMessage(flyby, now) : null;
 }

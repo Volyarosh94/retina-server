@@ -3,16 +3,18 @@ import { request } from "@retina/shared";
 import { API_BASE } from "../constants";
 import {
   DEFAULT_PASS,
-  FLEET_POLL_S,
   flybyCaveat,
+  flybyDue,
   flybyErrorText,
   parsePass,
   PASS_FIELDS,
   passProblem,
   passText,
   requestFlyby,
+  useFlybyMessage,
   type PassField,
   type PassText,
+  type RequestedFlyby,
 } from "./flyby";
 import {
   COMMON_MODE_MIN_NODES,
@@ -408,7 +410,10 @@ function FlybyCard({ network }: { network: MagNetwork | null }) {
   const [pass, setPass] = useState<PassText>(() => passText(DEFAULT_PASS));
   const [flying, setFlying] = useState(false);
   const inFlight = useRef(false);
-  const [message, setMessage] = useState<string | null>(null);
+  // The last flyby asked for, said as it stands: on its way, passed, then gone.
+  const [requested, setRequested] = useState<RequestedFlyby | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const message = useFlybyMessage(requested);
 
   const nodes = network?.nodes ?? [];
   // A magnetometer taken away since it was chosen leaves the choice to the
@@ -427,16 +432,13 @@ function FlybyCard({ network }: { network: MagNetwork | null }) {
     if (inFlight.current) return;
     inFlight.current = true;
     setFlying(true);
-    setMessage(null);
+    setError(null);
     try {
       const planned = parsePass(pass);
       const { seq } = await requestFlyby(chosen?.node_id ?? null, planned);
-      const where = chosen ? chosen.host_node_id : "a magnetometer the simulator picks";
-      setMessage(
-        `UAP flyby #${seq ?? "?"} requested: it passes ${where} about ${planned.lead_s + FLEET_POLL_S} s from now. Watch it on the /sim map.`,
-      );
+      setRequested({ seq, host: chosen ? chosen.host_node_id : null, dueMs: flybyDue(Date.now(), planned.lead_s), onMap: false });
     } catch (e) {
-      setMessage(`Error: ${flybyErrorText((e as Error).message)}`);
+      setError(`Error: ${flybyErrorText((e as Error).message)}`);
     } finally {
       inFlight.current = false;
       setFlying(false);
@@ -483,7 +485,11 @@ function FlybyCard({ network }: { network: MagNetwork | null }) {
         <button className="btn btn-secondary" onClick={flyUap} disabled={!network || nodes.length === 0 || !valid || flying}>
           {flying ? "Requesting…" : "Fly a UAP past it"}
         </button>
-        {message && <span className={`ps-save-msg ${message.startsWith("Error") ? "ps-save-err" : ""}`}>{message}</span>}
+        {error ? (
+          <span className="ps-save-msg ps-save-err">{error}</span>
+        ) : (
+          message && <span className="ps-save-msg">{message}</span>
+        )}
       </div>
       <p className="ps-type-desc ps-settings-desc">
         At 15 nT of sensor noise a magnetometer finds a pass like this out to about 1.5 km (further if it is slow);

@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_PASS, flybyErrorText, parsePass, PASS_FIELDS, passProblem, passText, requestFlyby } from "./flyby";
+import {
+  DEFAULT_PASS,
+  FLYBY_MESSAGE_AFTER_MS,
+  flybyDue,
+  flybyErrorText,
+  flybyMessage,
+  parsePass,
+  PASS_FIELDS,
+  passProblem,
+  passText,
+  requestFlyby,
+} from "./flyby";
 
 describe("requestFlyby", () => {
   const fetchMock = vi.fn();
@@ -70,5 +81,34 @@ describe("the pass form", () => {
       "Magnetometer must be a magnetometer id (mag-…) or absent for any",
     );
     expect(flybyErrorText("Not Found")).toBe("Not Found");
+  });
+});
+
+// The fleet picks a request up at its next config poll, every 5 s, and the
+// pass comes `lead_s` after that.
+describe("a flyby's message", () => {
+  const asked = 1_790_726_400_000;
+  const due = flybyDue(asked, 60);
+  const at = new Date(due).toLocaleTimeString();
+
+  it("is due the lead after the fleet's next poll", () => {
+    expect(due).toBe(asked + 65_000);
+  });
+
+  it("says when the pass comes, then that it passed, then nothing", () => {
+    const onMap = { seq: 4, host: "synth-002", dueMs: due, onMap: true };
+    expect(flybyMessage(onMap, asked)).toBe(`UAP flyby #4 on its way past synth-002: closest approach at about ${at}.`);
+    expect(flybyMessage(onMap, due - 1)).toMatch(/on its way/);
+    expect(flybyMessage(onMap, due)).toBe(`UAP flyby #4 passed synth-002 at about ${at}: the summary shows whether it was detected.`);
+    expect(flybyMessage(onMap, due + FLYBY_MESSAGE_AFTER_MS - 1)).toMatch(/passed/);
+    expect(flybyMessage(onMap, due + FLYBY_MESSAGE_AFTER_MS)).toBeNull();
+  });
+
+  it("points the Physics page at the map, and says when the simulator picks the magnetometer", () => {
+    const anywhere = { seq: null, host: null, dueMs: due, onMap: false };
+    expect(flybyMessage(anywhere, asked)).toBe(
+      `UAP flyby #? on its way past a magnetometer the simulator picks: closest approach at about ${at}. Watch it on the /sim map.`,
+    );
+    expect(flybyMessage(anywhere, due)).toBe(`UAP flyby #? passed at about ${at}: the summary on the /sim map shows whether it was detected.`);
   });
 });

@@ -559,7 +559,7 @@ describe("PhysicsSettings", () => {
     installServer({ ...APPLIED, ...MAG });
     await mount();
     await click("Fly a UAP past it");
-    expect(screen.getByText(/^UAP flyby #1 requested/)).toBeInTheDocument();
+    expect(screen.getByText(/^UAP flyby #1 on its way/)).toBeInTheDocument();
     await pollOnce();
     await pollOnce();
     expect(banner()).toBe("");

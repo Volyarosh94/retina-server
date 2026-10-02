@@ -277,10 +277,10 @@ describe("MagnetometerPanel", () => {
     expect(screen.getByText("600 m to one side and 300 m up, at 120 m/s. The radar nodes see it too.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Fly a UAP past it" }));
     const eta = new Date(Date.now() + 65_000);
-    const message = await screen.findByText(/^UAP flyby #4 on its way: closest approach at about /);
+    const message = await screen.findByText(/^UAP flyby #4 on its way past synth-002: closest approach at about /);
     // The clock time the pass is due, give or take the second the test takes.
     const due = [eta, new Date(eta.getTime() + 1000)].map((d) => d.toLocaleTimeString());
-    expect(due.some((t) => message.textContent === `UAP flyby #4 on its way: closest approach at about ${t}.`)).toBe(true);
+    expect(due.some((t) => message.textContent === `UAP flyby #4 on its way past synth-002: closest approach at about ${t}.`)).toBe(true);
     const post = fetchMock.mock.calls.find(([, opts]) => opts?.method === "POST");
     expect(String(post?.[0])).toMatch(/\/sim\/magnetometers\/flyby$/);
     expect(JSON.parse(String(post?.[1]?.body))).toEqual({
@@ -290,6 +290,31 @@ describe("MagnetometerPanel", () => {
       speed_mps: 120,
       lead_s: 60,
     });
+  });
+
+  // "On its way: closest approach at about 13:56:00" still showed at 13:59:
+  // the message says when the pass comes, then that it passed, then goes.
+  it("says when the pass comes, then that it has passed, then goes back to the pass it flies", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<MagnetometerPanel nodeId="mag-synth-002" network={network()} onClose={() => {}} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      fireEvent.click(screen.getByRole("button", { name: "Fly a UAP past it" }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      const at = new Date(Date.now() + 65_000).toLocaleTimeString();
+      expect(screen.getByText(`UAP flyby #4 on its way past synth-002: closest approach at about ${at}.`)).toBeInTheDocument();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(65_000); });
+      expect(screen.getByText(`UAP flyby #4 passed synth-002 at about ${at}: the summary shows whether it was detected.`)).toHaveClass(
+        "mag-chart-caption",
+      );
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60_000); });
+      expect(screen.queryByText(/^UAP flyby #4/)).not.toBeInTheDocument();
+      expect(screen.getByText("600 m to one side and 300 m up, at 120 m/s. The radar nodes see it too.")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps a flyby's message with the magnetometer it was for", async () => {

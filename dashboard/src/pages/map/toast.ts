@@ -27,15 +27,19 @@ let _idSeq = 1;
 const _elements = new Map<number, HTMLDivElement>();
 
 // Toasts sit on document.body, under `:root`, so the console's tokens resolve
-// here and each toast takes the console's theme.
-const TONES: { bg: Record<Tone, string>; border: Record<Tone, string>; ink: string } = {
-  bg: {
-    info: "var(--bg-card)",
+// here and each toast takes the console's theme. A tone's tint is a wash of
+// 10–15 %: laid over the card's own colour rather than used as the
+// background, so the map under a toast (its labels, a radar node's ring)
+// never shows through the text.
+const TONES: { tint: Record<Tone, string | null>; border: Record<Tone, string>; card: string; ink: string } = {
+  tint: {
+    info: null,
     success: "var(--success-light)",
     error: "var(--error-light)",
     warn: "var(--warning-light)",
   },
   border: { info: "var(--border-light)", success: "var(--success)", error: "var(--error)", warn: "var(--warning)" },
+  card: "var(--bg-card)",
   ink: "var(--text-primary)",
 };
 
@@ -96,8 +100,10 @@ function render() {
     if (_elements.get(e.id)?.parentNode === c) continue;
     const el = document.createElement("div");
     el.textContent = e.text;
+    const tint = TONES.tint[e.tone];
     Object.assign(el.style, {
-      background: TONES.bg[e.tone],
+      backgroundColor: TONES.card,
+      backgroundImage: tint ? `linear-gradient(${tint}, ${tint})` : "none",
       border: `1px solid ${TONES.border[e.tone]}`,
       color: TONES.ink,
       padding: "8px 12px",

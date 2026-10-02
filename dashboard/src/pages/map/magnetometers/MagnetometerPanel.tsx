@@ -28,7 +28,15 @@ import {
   truthText,
   type ChartRow,
 } from "./format";
-import { DEFAULT_PASS, FLEET_POLL_S, flybyCaveat, flybyErrorText, requestFlyby } from "./flyby";
+import {
+  DEFAULT_PASS,
+  flybyCaveat,
+  flybyDue,
+  flybyErrorText,
+  requestFlyby,
+  useFlybyMessage,
+  type RequestedFlyby,
+} from "./flyby";
 import MagnetometerGlyph from "./MagnetometerGlyph";
 import { useMagnetometerDetail } from "./useMagnetometers";
 import type { MagEvent, MagNetwork, MagNode, MagState } from "./types";
@@ -120,7 +128,10 @@ function PanelBody({ node, network }: { node: MagNode; network: MagNetwork }) {
   const palette = usePalette();
   const chart = useChartTheme();
   const { detail, failed } = useMagnetometerDetail(node.node_id);
-  const [flyby, setFlyby] = useState<{ text: string; error: boolean } | null>(null);
+  // The flyby asked for here, said as it stands: on its way, passed, then gone.
+  const [requested, setRequested] = useState<RequestedFlyby | null>(null);
+  const [flybyError, setFlybyError] = useState<string | null>(null);
+  const flybyText = useFlybyMessage(requested);
   const [flying, setFlying] = useState(false);
 
   // Rebuilt only when a new detail lands, not at every poll of the network:
@@ -182,11 +193,11 @@ function PanelBody({ node, network }: { node: MagNode; network: MagNetwork }) {
     try {
       const { seq } = await requestFlyby(node.node_id, DEFAULT_PASS);
       // The fleet picks the request up within one config poll and times the
-      // pass from then: "about" this time, give or take that poll.
-      const eta = new Date(Date.now() + (DEFAULT_PASS.lead_s + FLEET_POLL_S) * 1000);
-      setFlyby({ text: `UAP flyby #${seq ?? "?"} on its way: closest approach at about ${eta.toLocaleTimeString()}.`, error: false });
+      // pass from then: "about" that time, give or take the poll.
+      setRequested({ seq, host: node.host_node_id, dueMs: flybyDue(Date.now(), DEFAULT_PASS.lead_s), onMap: true });
+      setFlybyError(null);
     } catch (e) {
-      setFlyby({ text: `Error: ${flybyErrorText((e as Error).message)}`, error: true });
+      setFlybyError(`Error: ${flybyErrorText((e as Error).message)}`);
     } finally {
       setFlying(false);
     }
@@ -246,11 +257,12 @@ function PanelBody({ node, network }: { node: MagNode; network: MagNetwork }) {
             {flying ? "Requesting…" : "Fly a UAP past it"}
           </button>
           {caveat && <div className="mag-caveat">{caveat}</div>}
-          {flyby ? (
-            <div className={flyby.error ? "mag-error" : "mag-chart-caption"}>{flyby.text}</div>
+          {flybyError ? (
+            <div className="mag-error">{flybyError}</div>
           ) : (
             <div className="mag-chart-caption">
-              {`${DEFAULT_PASS.closest_approach_m} m to one side and ${DEFAULT_PASS.altitude_m} m up, at ${DEFAULT_PASS.speed_mps} m/s. The radar nodes see it too.`}
+              {flybyText ??
+                `${DEFAULT_PASS.closest_approach_m} m to one side and ${DEFAULT_PASS.altitude_m} m up, at ${DEFAULT_PASS.speed_mps} m/s. The radar nodes see it too.`}
             </div>
           )}
         </div>

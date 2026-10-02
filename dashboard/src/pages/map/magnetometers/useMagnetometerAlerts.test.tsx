@@ -22,7 +22,10 @@ describe("useMagnetometerAlerts", () => {
     const later = network({ events: [fresh, ...network().events] });
     rerender({ n: later });
     expect(toast).toHaveBeenCalledTimes(1);
-    expect(toast).toHaveBeenCalledWith("Magnetometer beside synth-003: 95 nT, UAP 1.10 km – 1.60 km away", {
+    // That it started, not what it measured as it opened: a score just over
+    // the threshold gives the weakest strength and the widest range the event
+    // will have, and the summary and the panel follow it from there.
+    expect(toast).toHaveBeenCalledWith("Magnetometer beside synth-003 started detecting.", {
       tone: "warn",
       // As long as the map's squawk alert: long enough to read.
       durationMs: 6000,
@@ -42,7 +45,7 @@ describe("useMagnetometerAlerts", () => {
     const burst = hosts.map((host, i) => magEvent({ event_id: `mag-evt-run-1-0001${i}`, node_id: `mag-${host}`, host_node_id: host }));
     rerender({ n: network({ events: burst }) });
     expect(toast).toHaveBeenCalledTimes(1);
-    expect(toast).toHaveBeenCalledWith("5 magnetometers started detecting: beside synth-001, synth-002, synth-003 and 2 more", {
+    expect(toast).toHaveBeenCalledWith("5 magnetometers started detecting: beside synth-001, synth-002, synth-003 and 2 more.", {
       tone: "warn",
       durationMs: 6000,
     });
@@ -68,7 +71,7 @@ describe("useMagnetometerAlerts", () => {
     // An older server numbered events afresh with every run, so an id can repeat.
     rerender({ n: network({ run_id: "run-2", events: [reused(network().events[1].event_id, "synth-001")] }) });
     expect(toast).toHaveBeenCalledTimes(1);
-    expect(toast).toHaveBeenLastCalledWith(expect.stringMatching(/^Magnetometer beside synth-001: /), expect.anything());
+    expect(toast).toHaveBeenLastCalledWith("Magnetometer beside synth-001 started detecting.", expect.anything());
     rerender({ n: network({ run_id: "run-2", events: [reused("mag-evt-run-2-00002", "synth-003"), reused(network().events[1].event_id, "synth-001")] }) });
     expect(toast).toHaveBeenCalledTimes(2);
   });

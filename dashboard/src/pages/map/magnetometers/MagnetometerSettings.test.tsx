@@ -159,7 +159,8 @@ describe("MagnetometerSettings", () => {
     fireEvent.change(screen.getByRole("spinbutton", { name: "Closest approach (m)" }), { target: { value: "800" } });
     fireEvent.click(fly);
 
-    await screen.findByText(/^UAP flyby #3 requested/);
+    const due = [65_000, 66_000].map((ms) => new Date(Date.now() + ms).toLocaleTimeString());
+    const message = await screen.findByText(/^UAP flyby #3 on its way/);
     expect(sent("POST", "/sim/magnetometers/flyby")).toEqual({
       node_id: "mag-synth-002",
       closest_approach_m: 800,
@@ -167,7 +168,35 @@ describe("MagnetometerSettings", () => {
       speed_mps: 120,
       lead_s: 60,
     });
-    expect(screen.getByText("UAP flyby #3 requested: it passes synth-002 about 65 s from now. Watch it on the /sim map.")).toBeInTheDocument();
+    // The clock time the pass is due, give or take the second the test takes.
+    expect(
+      due.map((t) => `UAP flyby #3 on its way past synth-002: closest approach at about ${t}. Watch it on the /sim map.`),
+    ).toContain(message.textContent);
+  });
+
+  // A message that says "about 65 s from now" is wrong a minute later: it
+  // says when the pass comes, then that it passed, then goes.
+  it("says when the pass comes, then that it has passed, then lets it go", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<MagnetometerSettings config={CONFIG} />);
+      await advance(0);
+      fireEvent.change(screen.getByRole("combobox", { name: "Magnetometer" }), { target: { value: "mag-synth-002" } });
+      fireEvent.click(screen.getByRole("button", { name: "Fly a UAP past it" }));
+      await advance(0);
+      const at = new Date(Date.now() + 65_000).toLocaleTimeString();
+      expect(screen.getByText(`UAP flyby #3 on its way past synth-002: closest approach at about ${at}. Watch it on the /sim map.`)).toBeInTheDocument();
+
+      await advance(64_000);
+      expect(screen.getByText(/^UAP flyby #3 on its way/)).toBeInTheDocument();
+      await advance(1_000);
+      expect(screen.getByText(`UAP flyby #3 passed synth-002 at about ${at}: the summary on the /sim map shows whether it was detected.`)).toBeInTheDocument();
+
+      await advance(5 * 60_000);
+      expect(screen.queryByText(/^UAP flyby #3/)).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("lets the simulator pick the magnetometer when none is chosen", async () => {
@@ -175,7 +204,7 @@ describe("MagnetometerSettings", () => {
     const fly = await screen.findByRole("button", { name: "Fly a UAP past it" });
     await waitFor(() => expect(fly).toBeEnabled());
     fireEvent.click(fly);
-    await screen.findByText(/passes a magnetometer the simulator picks/);
+    await screen.findByText(/on its way past a magnetometer the simulator picks/);
     expect(sent("POST", "/sim/magnetometers/flyby")).not.toHaveProperty("node_id");
   });
 
@@ -197,7 +226,7 @@ describe("MagnetometerSettings", () => {
       expect(screen.getByText("The magnetometer beside synth-002 is no longer placed: the simulator will pick one.")).toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Fly a UAP past it" }));
       await advance(0);
-      expect(screen.getByText(/passes a magnetometer the simulator picks/)).toBeInTheDocument();
+      expect(screen.getByText(/on its way past a magnetometer the simulator picks/)).toBeInTheDocument();
       expect(sent("POST", "/sim/magnetometers/flyby")).not.toHaveProperty("node_id");
     } finally {
       vi.useRealTimers();
@@ -235,8 +264,10 @@ describe("MagnetometerSettings", () => {
     fireEvent.change(lead, { target: { value: "90" } });
     expect(lead).toHaveAttribute("aria-invalid", "false");
     expect(fly).toBeEnabled();
+    const due = [95_000, 96_000].map((ms) => new Date(Date.now() + ms).toLocaleTimeString());
     fireEvent.click(fly);
-    await screen.findByText(/about 95 s from now/);
+    const message = await screen.findByText(/^UAP flyby #3 on its way/);
+    expect(due.some((t) => message.textContent?.includes(`closest approach at about ${t}.`))).toBe(true);
     expect(sent("POST", "/sim/magnetometers/flyby").lead_s).toBe(90);
   });
 
@@ -263,7 +294,7 @@ describe("MagnetometerSettings", () => {
     fireEvent.click(fly);
     expect(screen.getByRole("button", { name: "Requesting…" })).toBeDisabled();
     await act(async () => answer?.());
-    await screen.findByText(/^UAP flyby #8 requested/);
+    await screen.findByText(/^UAP flyby #8 on its way/);
     expect(posts("/sim/magnetometers/flyby")).toBe(1);
     expect(screen.getByRole("button", { name: "Fly a UAP past it" })).toBeEnabled();
   });
