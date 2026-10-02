@@ -66,11 +66,14 @@ The method, per second of data
    left out of that test because a long window goes on seeing a strong pass
    for minutes after it has gone. Afterwards, no window that overlaps the
    event may open another. The event carries the time of closest approach (t0
-   at the peak), its time scale τ in seconds, the strength (the fitted
-   signal's peak magnitude, in nT), the score, a confidence, and a range
-   band from the strength, the dipole model and the score: a strength read
-   just above a threshold reads high, since noise helped its window over it,
-   so the band reaches further out the lower the score (BAND_NEAR, BAND_FAR).
+   at the peak); the pass's own time scale τ and its strength (the fitted
+   signal's peak magnitude, in nT), both measured on the peak's window over a
+   finer range of τ than the six (refine_pass), since a pass whose τ falls
+   between two scales reads up to a quarter weak at either; the score, a
+   confidence, and a range band from the strength, the dipole model and the
+   score: a strength read just above a threshold reads high, since noise
+   helped its window over it, so the band reaches further out the lower the
+   score (BAND_NEAR, BAND_FAR).
 6. **Scoring.** The simulator sends the truth beside each reading (the UAP
    field at the node and the nearest UAP). It never feeds detection. It labels
    each event true or false (by whether the UAP's own field could have
@@ -388,6 +391,17 @@ SAMPLE_PERIOD_S = 1.0
 SCALES_S = (2, 4, 8, 16, 32, 64)
 HALF_WINDOW = 4  # ±4τ: f0 is down to 0.1 % of its peak there, f2 to 1 %
 DOF = 9  # 3 functions × 3 axes
+# An event's τ and strength are measured on its peak's window at τ from an
+# octave and a half below the peak's scale to half an octave above, in
+# eighth-octave steps (refine_pass). Fitted at the nearest of the six scales,
+# a pass whose τ falls between two of them reads 15 % weak in the median, and
+# up to 30 %; and a longer window keeps more of a pass's energy (less of it
+# goes with the window's constant and slope), so the best of the six can be
+# up to three times the pass's own τ, and is seldom much shorter. The
+# statistic, and so detection, stays on the six scales.
+REFINE_PER_OCTAVE = 8
+REFINE_BELOW, REFINE_ABOVE = 12, 4
+REFINE_MIN_TAU = 1.0  # readings: nothing shorter can be resolved
 
 
 def anderson_functions(u: np.ndarray) -> np.ndarray:
@@ -401,9 +415,10 @@ class Scale:
     tau_s: float
     length: int  # samples in the window, odd
     detector: np.ndarray  # (3, length): orthonormal, orthogonal to constant and slope
-    design: np.ndarray  # (length, 5): [f0 f1 f2 1 u], for fitting the signal
-    functions: np.ndarray  # (length, 3)
     nuisance: np.ndarray  # (length, 2): orthonormal constant and slope, which the detector ignores
+    offsets: np.ndarray  # (length,): readings from the window's centre
+    fine_taus: np.ndarray  # (n,): the τ refine_pass tries on this scale's window, in readings
+    fine_bases: np.ndarray  # (n, 3, length): each one's functions, orthonormal and clear of constant and slope
 
 
 def _make_scale(tau_s: float) -> Scale:
@@ -413,21 +428,61 @@ def _make_scale(tau_s: float) -> Scale:
     functions = anderson_functions(u)
     nuisance = np.column_stack([np.ones_like(u), u])
     q_nuisance, _ = np.linalg.qr(nuisance)
-    residual = functions - q_nuisance @ (q_nuisance.T @ functions)
-    q, _ = np.linalg.qr(residual)
+
+    def basis(f: np.ndarray) -> np.ndarray:
+        q, _ = np.linalg.qr(f - q_nuisance @ (q_nuisance.T @ f))
+        return q.T.copy()
+
+    fine_taus = np.array(
+        [
+            tau
+            for j in range(-REFINE_BELOW, REFINE_ABOVE + 1)
+            if (tau := tau_s * 2.0 ** (j / REFINE_PER_OCTAVE)) >= REFINE_MIN_TAU
+        ]
+    )
     return Scale(
         tau_s=tau_s,
         length=len(u),
-        detector=q.T.copy(),
-        design=np.column_stack([functions, nuisance]),
-        functions=functions,
+        detector=basis(functions),
         nuisance=q_nuisance,
+        offsets=offsets,
+        fine_taus=fine_taus,
+        fine_bases=np.stack([basis(anderson_functions(offsets / tau)) for tau in fine_taus]),
     )
 
 
 SCALES = tuple(_make_scale(t) for t in SCALES_S)
 LONGEST = max(s.length for s in SCALES)
 SHORTEST = min(s.length for s in SCALES)
+
+
+def fit_peak(scale: Scale, tau: float, window: np.ndarray) -> float:
+    """Peak magnitude of the pass fitted at τ (readings) on this scale's
+    window: least squares on the Anderson functions plus a constant and slope
+    per axis, keeping the functions' part. Includes the signal's own mean,
+    which the detector removes."""
+    u = scale.offsets / tau
+    functions = anderson_functions(u)
+    coefficients, *_ = np.linalg.lstsq(np.column_stack([functions, np.ones_like(u), u]), window, rcond=None)
+    return float(np.max(np.linalg.norm(functions @ coefficients[:3], axis=1)))
+
+
+def refine_pass(scale: Scale, window: np.ndarray) -> tuple[float, float]:
+    """The pass's τ (readings) and strength (nT) on the peak's window: of the
+    τ the scale tries (fine_taus), the one whose functions keep the most of
+    the window's energy, moved by a parabola through it and its neighbours,
+    and the fit there. Over one window the energies compare like for like,
+    which the six scales' own, over windows of different lengths, do not."""
+    projection = np.einsum("jfl,la->jfa", scale.fine_bases, window)
+    energy = np.sum(projection * projection, axis=(1, 2))
+    j = int(np.argmax(energy))
+    step = 0.0
+    if 0 < j < len(energy) - 1:
+        curvature = energy[j - 1] - 2.0 * energy[j] + energy[j + 1]
+        if curvature < 0:
+            step = min(0.5, max(-0.5, 0.5 * (energy[j - 1] - energy[j + 1]) / curvature))
+    tau = float(scale.fine_taus[j] * 2.0 ** (step / REFINE_PER_OCTAVE))
+    return tau, fit_peak(scale, tau, window)
 
 
 def score_sigma(energy_over_variance: float) -> float:
@@ -567,26 +622,25 @@ def garwood(k: int, exposure: float) -> tuple[float, float]:
 # term in 1/(score − BAND_POLE_SIGMA). How far off a strength reads depends on
 # the score it came with. Just above a threshold, noise helped that window over
 # it, and the least-squares fit takes the noise in with the signal: passes
-# found at 5.5–6σ read a median 1.37 of their true peak field (0.81–2.11 for
-# nine in ten), at 3.5–4σ 1.57, while above 15σ they read 0.94 (a pass's τ
-# falling between two of the bank's scales). The fixed ±15 % the band first
-# allowed held the true slant range for 92 % of the passes found at 5.5σ, but
-# for 65 % of those found just above it and 57 % of those just above 3.5σ.
-# These constants are fitted by scripts/magnetometer_false_alarms.py, to the
-# 2,381 passes it found at 3.5, 5, 5.5 and 6σ: the narrowest band, on average,
-# that keeps 97 % of every score bin's passes, from 3.5σ to the 40σ clip,
-# inside each side (97 % being the least at which a band fitted to half the
-# seeds held 90 % of the other half's in every bin), its far end then moved
-# out by 0.015 so that every score bin of every one of those thresholds holds
-# 90 %, and rounded outwards. It holds the true slant range for 97 % of the
-# passes found at 5.5σ, and for 97.5 % of those found just above it; for 94 %
-# or more in every score bin at 3.5, 5 and 5.5σ, and for 91 % or more at 6σ
-# (8–10σ, 30 of 33). Far over near is 1.33 for a strong detection, 1.70 at
-# 5.5σ and 2.45 at 3.5σ; below 3.5σ the band is the fit carried on.
+# found at 5.5–6σ read a median 1.35 of their true peak field (0.86–2.06 for
+# nine in ten), at 3.5–4σ 1.61, while above 15σ, measured at their own τ
+# (refine_pass), they read 1.00 (0.95–1.09). These constants are fitted by
+# scripts/magnetometer_false_alarms.py, to the 2,381 passes it found at 3.5, 5,
+# 5.5 and 6σ: the narrowest band, on average, that keeps 98 % of every score
+# bin's passes, from 3.5σ to the 40σ clip, inside each side (98 % being the
+# least at which a band fitted to half the seeds held 90 % of the other half's
+# in every bin; as fitted, every score bin of every one of those thresholds
+# held 90 %), rounded outwards, its far end then raised by 0.005 to reach the
+# axis (ln 2) at every score, as far as an exactly read strength can put the
+# UAP. It holds the true slant range for 98.6 % of the passes found at 5.5σ,
+# and for all 40 found just above it; for 95 % or more in every score bin at
+# 3.5, 5 and 5.5σ, and for 91 % or more at 6σ (8–10σ, 30 of 33). Far over near
+# is 1.29 for a strong detection, 1.69 at 5.5σ and 2.50 at 3.5σ; below 3.5σ
+# the band is the fit carried on.
 BAND_POLE_SIGMA = 2.0
 BAND_LOWEST_SIGMA = 3.0  # the lowest threshold the settings allow
-BAND_NEAR = (-0.126, -0.57)
-BAND_FAR = (0.652, 2.30)
+BAND_NEAR = (-0.056, -0.56)
+BAND_FAR = (0.627, 2.53)
 
 
 # Beyond this the interval means only "never": a score at the 40σ clip gives a
@@ -900,7 +954,8 @@ class Event:
     # meanwhile describes other settings.
     epoch: int = 0
     # The peak's scale as the detector indexes it (τ in readings); tau_s is the
-    # same scale in seconds, at the readings' own spacing.
+    # pass's own τ measured on that scale's window (refine_pass), in seconds at
+    # the readings' own spacing.
     scale_tau: float = 0.0
     # The passes this event made detected, while it is labelled true: an event
     # open across two passes at its magnetometer detected both.
@@ -1034,11 +1089,12 @@ def _significant(x: float) -> float:
     return float(f"{x:.3g}")
 
 
-def _tau_s(scale: Scale, times: np.ndarray) -> float:
-    """A scale's τ in seconds: the detector counts readings, and a reading is
-    whatever its window's own times say, a second when the fleet keeps time."""
+def _tau_s(scale: Scale, times: np.ndarray, readings: float | None = None) -> float:
+    """A scale's τ, or ``readings`` measured on its window, in seconds: the
+    detector counts readings, and a reading is whatever its window's own times
+    say, a second when the fleet keeps time."""
     spacing_s = (times[-1] - times[-scale.length]) / ((scale.length - 1) * 1000.0)
-    return round(float(scale.tau_s * spacing_s), 2)
+    return round(float((scale.tau_s if readings is None else readings) * spacing_s), 2)
 
 
 def _base36(n: int) -> str:
@@ -1448,8 +1504,8 @@ class MagnetometerNetwork:
             event.peak_ms = centre_ms
             event.peak_end_ms = t_ms
             event.scale_tau = scale.tau_s
-            event.tau_s = _tau_s(scale, times)
-            event.strength_nt = self._strength(scale, residual)
+            tau, event.strength_nt = refine_pass(scale, residual[-scale.length :])
+            event.tau_s = _tau_s(scale, times, tau)
             event.confidence = confidence(score)
             event.range_km = range_band_km(event.strength_nt, self.moment_am2, score)
             event.uap_energy = self._uap_energy(node, scale)
@@ -1464,16 +1520,6 @@ class MagnetometerNetwork:
         if event._quiet >= CLOSE_AFTER and t_ms > event.peak_end_ms:
             self._close_event(node, t_ms)
         return True
-
-    @staticmethod
-    def _strength(scale: Scale, residual: np.ndarray) -> float:
-        """Peak magnitude of the fitted pass: least squares on the Anderson
-        functions plus a constant and slope per axis, keeping the functions'
-        part. Includes the signal's own mean, which the detector removes."""
-        window = residual[-scale.length :]
-        coefficients, *_ = np.linalg.lstsq(scale.design, window, rcond=None)
-        fitted = scale.functions @ coefficients[:3]
-        return float(np.max(np.linalg.norm(fitted, axis=1)))
 
     @staticmethod
     def _uap_energy(node: NodeState, scale: Scale) -> float:
@@ -1491,7 +1537,7 @@ class MagnetometerNetwork:
         self, node: NodeState, scale: Scale, times: np.ndarray, score: float, energy: float, residual: np.ndarray
     ) -> None:
         self._event_seq += 1
-        strength = self._strength(scale, residual)
+        tau, strength = refine_pass(scale, residual[-scale.length :])
         node.event = Event(
             event_id=f"mag-evt-{self.run_id}-{self._event_seq:05d}",
             node_id=node.node_id,
@@ -1500,7 +1546,7 @@ class MagnetometerNetwork:
             peak_ms=int(times[-1 - scale.length // 2]),
             score_sigma=score,
             strength_nt=strength,
-            tau_s=_tau_s(scale, times),
+            tau_s=_tau_s(scale, times, tau),
             confidence=confidence(score),
             range_km=range_band_km(strength, self.moment_am2, score),
             peak_energy=energy,

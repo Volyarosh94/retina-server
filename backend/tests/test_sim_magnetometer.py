@@ -241,6 +241,25 @@ class TestAndersonBasis:
             captured = np.sum((scale.detector @ field_detrended) ** 2)
             assert captured / np.sum(field_detrended**2) > 0.999
 
+    @pytest.mark.parametrize("octaves", [0.5, 1.5, 2.5, 3.5, 4.5])
+    @pytest.mark.parametrize("longer", [False, True], ids=["nearest-scale", "a-longer-scale"])
+    def test_a_pass_between_two_scales_is_measured_at_its_own_tau(self, octaves, longer):
+        # Midway between two of the six scales, a pass fitted at either read
+        # 15 % weak in the median; and the scale whose window keeps the most
+        # energy can be the next one up. Measured on that window over the
+        # finer range of τ, its τ and strength come back to within a per cent.
+        rng = np.random.default_rng(7)
+        tau = 2.0 ** (1 + octaves)  # 2.83 … 45.3 s, each midway between two scales
+        scale = next(s for s in sm.SCALES if s.tau_s > tau)
+        if longer:
+            scale = sm.SCALES[min(sm.SCALES.index(scale) + 1, len(sm.SCALES) - 1)]
+        offsets = scale.offsets + rng.uniform(-0.5, 0.5)  # the pass between readings
+        signal = sm.anderson_functions(offsets / tau) @ (rng.normal(size=(3, 3)) * 100.0)
+        window = signal + 40.0 + 0.3 * offsets[:, None]  # and a level and slope the fit ignores
+        measured_tau, strength = sm.refine_pass(scale, window)
+        assert measured_tau == pytest.approx(tau, rel=0.01)
+        assert strength == pytest.approx(float(np.max(np.linalg.norm(signal, axis=1))), rel=0.01)
+
     def test_noise_statistic_is_chi_square_nine(self):
         rng = np.random.default_rng(11)
         for scale in sm.SCALES[:3]:
@@ -304,24 +323,25 @@ class TestScores:
 
     def test_range_band_brackets_both_geometries(self):
         # 100 nT is what a 1e9 A·m² dipole gives 1 km off on its equator, or
-        # 1.26 km off on its axis. A strong detection's strength reads close
-        # to the truth (0.77–1.11 of it for nine in ten above 15σ), so its
-        # band is narrow, and holds both.
+        # 1.26 km off on its axis. A strong detection's strength reads within a
+        # few per cent of the truth (0.95–1.09 of it for nine in ten above
+        # 15σ), so its band is narrow, and holds both.
         near, far = sm.range_band_km(100.0, 1e9, 40.0)
         assert near < 1.0 and far > 2 ** (1 / 3)
-        assert (near, far) == pytest.approx((0.954, 1.268), abs=1e-3)
+        assert (near, far) == pytest.approx((0.977, 1.260), abs=1e-3)
         assert sm.range_band_km(0.0, 1e9, 40.0) is None
 
     @pytest.mark.parametrize(
         ("score", "low", "high"),
         # How strengths read in the benchmark (scripts/magnetometer_false_alarms.py
-        # at its defaults): for the passes found in a score bin, at 3.5σ and at
-        # the default threshold, the bin's median score and the 5th and 95th
-        # percentiles of ln(strength · r³ / k·m), r the true slant range. A
-        # strength read exactly lies between 0 (the UAP on the dipole's equator)
-        # and ln 2 (on its axis); just above a threshold it reads high, so the
-        # band must reach out to where such a pass really was.
-        [(3.69, 0.066, 1.426), (5.76, -0.081, 1.173), (9.02, -0.004, 0.787), (40.0, -0.105, 0.667)],
+        # at its defaults, measured by refine_pass): for the passes found in a
+        # score bin, at 3.5σ and at the default threshold, the bin's median
+        # score and the 5th and 95th percentiles of ln(strength · r³ / k·m), r
+        # the true slant range. A strength read exactly lies between 0 (the UAP
+        # on the dipole's equator) and ln 2 (on its axis); just above a
+        # threshold it reads high, so the band must reach out to where such a
+        # pass really was.
+        [(3.69, 0.094, 1.477), (5.76, -0.003, 1.166), (9.02, -0.012, 0.754), (40.0, 0.029, 0.660)],
         ids=["just-above-3.5", "just-above-5.5", "8-10", "at-the-clip"],
     )
     def test_the_range_band_holds_how_strengths_read_at_each_score(self, score, low, high):
@@ -794,10 +814,30 @@ class TestDetection:
         (event,) = [e for e in rig.events() if e["node_id"] == node.node_id]
         truth = event["truth"]
         assert truth["label"] == "true"
-        assert event["strength_nt"] == pytest.approx(truth["true_peak_nt"], rel=0.15)
+        # Measured at the pass's own τ (refine_pass), not the nearest scale's.
+        assert event["strength_nt"] == pytest.approx(truth["true_peak_nt"], rel=0.05)
+        assert event["tau_s"] == pytest.approx(1000 * math.hypot(cpa_km, altitude_km) / speed_mps, rel=0.15)
         assert event["range_km"][0] <= truth["slant_range_km"] <= event["range_km"][1]
         assert abs(event["peak_ms"] / 1000 - t_cpa) <= 8
         assert event["noise_once_per_h"] >= 1e9
+
+    @pytest.mark.parametrize("heading_deg", [0, 70, 140, 210, 280])
+    def test_the_flyby_default_reads_its_own_strength_and_tau(self, heading_deg):
+        # The flyby form's default, 600 m to one side, 300 m up, at 120 m/s: τ
+        # is 5.6 s, midway between the 4 s and 8 s scales, where fitted at a
+        # scale the strength read a sixth weak and the band missed one pass in
+        # twelve.
+        rig = Rig()
+        node = rig.array.nodes[0]
+        t_cpa = T0 + 1100
+        flyer = straight_pass(node, cpa_km=0.6, altitude_km=0.3, speed_mps=120, heading_deg=heading_deg, t_cpa=t_cpa)
+        rig.run(1500, [flyer])
+        (event,) = [e for e in rig.events() if e["node_id"] == node.node_id]
+        truth = event["truth"]
+        assert truth["label"] == "true"
+        assert event["tau_s"] == pytest.approx(math.hypot(600, 300) / 120, rel=0.1)
+        assert event["strength_nt"] == pytest.approx(truth["true_peak_nt"], rel=0.06)
+        assert event["range_km"][0] <= truth["slant_range_km"] <= event["range_km"][1]
 
     def test_a_distant_pass_is_not_claimed(self):
         rig = Rig()
@@ -917,9 +957,9 @@ class TestDetection:
         assert event["node_id"] == node.node_id and event["truth"]["label"] == "true"
         assert event["score_sigma"] > 10 and abs(event["peak_ms"] / 1000 - t_cpa) <= 10 * period_s
         assert event["active"] is False
-        # Times in seconds: a scale of k readings is 1.6 k s here. The pass's
-        # own τ is 806 m / 120 m/s = 6.7 s.
-        assert event["tau_s"] / period_s == pytest.approx(min(sm.SCALES_S, key=lambda k: abs(k * period_s - 6.7)))
+        # Times in seconds: τ is measured in readings, 1.6 s apart here, and
+        # published in seconds. The pass's own τ is 806 m / 120 m/s = 6.7 s.
+        assert event["tau_s"] == pytest.approx(math.hypot(700, 400) / 120, rel=0.1)
         snapshot = rig.snapshot()
         assert [n["longest_scale_s"] for n in snapshot["nodes"]] == [pytest.approx(64 * period_s)] * 8
         # Exposure is time, not readings: 8 magnetometers searching from some
